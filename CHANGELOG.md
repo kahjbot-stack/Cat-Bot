@@ -6,6 +6,18 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ---
 
+## [1.0.3] — 2026-05-06
+
+### cat-bot
+
+#### Fixed
+
+- **Explicit `0.0.0.0` host binding** (`src/server/server.ts`): `httpServer.listen()` now binds to `0.0.0.0` explicitly instead of Node.js's default `::` (IPv6 dual-stack). Container runtimes where `IPV6_V6ONLY=1` is the default silently dropped all IPv4 traffic under the previous binding — the explicit address guarantees reachability for both IPv4 and IPv6 clients.
+
+#### Changed
+
+- **`PORT` env var is now optional** (`src/engine/config/env.config.ts`): `PORT` is read via `getOptionalEnv` and defaults to `3000` when unset. Operators can omit `PORT` from their `.env` file entirely in development without a startup validation error.
+
 ## [1.0.2] — 2026-05-06
 
 ### cat-bot
