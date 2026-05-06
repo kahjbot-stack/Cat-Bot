@@ -32,7 +32,9 @@ export function startServer(): void {
   registerValidationHandlers(io);
   registerBotMonitorHandlers(io);
 
-  const server = httpServer.listen(port, () => {
+  // Bind explicitly to 0.0.0.0 — without this Node.js defaults to '::' (IPv6 dual-stack),
+  // which silently drops IPv4 traffic in container runtimes where IPV6_V6ONLY=1 is the default.
+  const server = httpServer.listen(port, '0.0.0.0', () => {
     logger.info(`Webhook & API server listening on port ${port}`);
     logger.info('Registered Facebook Page session routes:');
 
