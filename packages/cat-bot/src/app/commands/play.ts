@@ -1,174 +1,230 @@
 /**
- * /play — Search YouTube and send the top result as an MP3 audio file.
+ * /play — YouTube Audio Search and Streamer
  *
- * Usage:
- *   /play <search query>
+ * Searches YouTube for the given query, downloads the top result as an MP3
+ * audio file, and sends it as a playable attachment in the current chat.
  *
- * Fetches from: https://api.cuki.biz.id/api/search/playyt
- * Returns video metadata + a direct MP3 download link.
+ * API: https://yt-dlp-stream.onrender.com/api/v2/q?=<query>
+ *
+ * Response shape:
+ *   {
+ *     credit:   string   — API provider identifier
+ *     version:  string   — API version string
+ *     media: {
+ *       mp4:  string     — direct MP4 video download URL
+ *       mp3:  string     — direct MP3 audio download URL
+ *     }
+ *     ApiCount: number   — total requests served by this API instance
+ *     ms:       number   — server-side processing time in milliseconds
+ *   }
+ *
+ * The command fetches the mp3 URL from the API response, streams it into a
+ * buffer, and sends it as a named .mp3 attachment alongside a clean caption.
+ * All network steps use AbortSignal.timeout() guards to prevent indefinite hangs.
+ *
+ * Aliases: /song, /music
+ * Access:  ANYONE
+ * Cooldown: 15s (audio downloads are bandwidth-heavy)
  */
 
 import type { AppCtx } from '@/engine/types/controller.types.js';
 import { Role } from '@/engine/constants/role.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
-import { createUrl } from '@/engine/utils/api.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── API constants ──────────────────────────────────────────────────────────────
 
-interface PlayytResponse {
-  success: boolean;
-  data: {
-    searchQuery: string;
-    video: {
-      title: string;
-      url: string;
-      duration: {
-        formatted: string;
-      };
-      views: number;
-      uploaded: string;
-      author: {
-        name: string;
-        url: string;
-      };
-    };
-    download: {
-      success: boolean;
-      metadata: {
-        videoId: string;
-        title: string;
-        channel: string;
-      };
-      audio: {
-        quality: string;
-        bitrate: string;
-        format: string;
-        size: number | null;
-        sizeUnit: string;
-        url: string;
-        directLink: string;
-        filename: string;
-      };
-    };
+const API_BASE = 'https://yt-dlp-stream.onrender.com/api/v2/q';
+
+/** Maximum wait for the metadata fetch step (ms). */
+const SEARCH_TIMEOUT_MS = 30_000;
+
+/** Maximum wait for the audio binary download step (ms). */
+const DOWNLOAD_TIMEOUT_MS = 60_000;
+
+// ── API response type ──────────────────────────────────────────────────────────
+
+interface YtDlpApiResponse {
+  credit: string;
+  version: string;
+  media: {
+    mp4: string;
+    mp3: string;
   };
+  ApiCount: number;
+  ms: number;
 }
 
-// ── Command Config ─────────────────────────────────────────────────────────────
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/**
+ * Strips characters that are unsafe in filenames across all major OSes.
+ * Truncates to 80 characters to avoid path-length limits.
+ */
+function safeFilename(query: string): string {
+  return (
+    query
+      .replace(/[/\\?%*:|"<>]/g, '-')
+      .replace(/\s+/g, '_')
+      .trim()
+      .substring(0, 80) + '.mp3'
+  );
+}
+
+/**
+ * Formats a duration in milliseconds to a human-readable string.
+ * e.g. 10535 → "10.5s"
+ */
+function formatMs(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(1)}s`;
+}
+
+// ── Command configuration ──────────────────────────────────────────────────────
 
 export const config: CommandConfig = {
   name: 'play',
   aliases: ['song', 'music'] as string[],
-  version: '1.0.0',
+  version: '2.0.0',
   role: Role.ANYONE,
   author: 'AjiroDesu',
-  description: 'Search YouTube and send the top result as an MP3 audio file.',
-  category: 'media',
+  description:
+    'Search YouTube and receive the top result as a playable MP3 audio file.',
+  category: 'Media',
   usage: '<search query>',
-  cooldown: 10,
+  cooldown: 15,
   hasPrefix: true,
 };
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** Format a raw view count to a human-readable string (e.g. 5,162,917). */
-const formatViews = (views: number): string => views.toLocaleString('en-US');
-
-// ── Command Handler ────────────────────────────────────────────────────────────
+// ── Command handler ────────────────────────────────────────────────────────────
 
 export const onCommand = async ({
   chat,
   args,
   usage,
 }: AppCtx): Promise<void> => {
-  // Require at least one word as the search query
-  if (args.length === 0) return usage();
+  // ── Input validation ───────────────────────────────────────────────────────
 
-  const query = args.join(' ');
+  if (args.length === 0) {
+    await usage();
+    return;
+  }
 
-  // ── Loading indicator ────────────────────────────────────────────────────
-  const waitId = await chat.replyMessage({
+  const query = args.join(' ').trim();
+
+  // ── Loading indicator ──────────────────────────────────────────────────────
+  // Shown while the API processes the search + download — gives the user
+  // immediate feedback since audio fetches can take several seconds.
+
+  const loadingId = (await chat.replyMessage({
     style: MessageStyle.MARKDOWN,
-    message: `🔍 Searching for **${query}**...`,
-  });
+    message: `🔍  Searching for **${query}**...`,
+  })) as string | undefined;
 
   try {
-    // Step 1 — Query the search + download API
-    const apiUrl = createUrl('cuki', '/api/search/playyt', { query }, 'apikey');
-    if (!apiUrl) throw new Error('Failed to build Play API URL.');
+    // ── Step 1: Fetch audio URLs from the search API ───────────────────────
+    // The API uses an empty-key query parameter: ?=<encoded query>
+    // This is the literal format required by this endpoint.
 
-    const res = await fetch(apiUrl);
+    const apiUrl = `${API_BASE}?=${encodeURIComponent(query)}`;
 
-    if (!res.ok) {
-      throw new Error(`API responded with HTTP ${res.status}`);
+    const searchRes = await fetch(apiUrl, {
+      signal: AbortSignal.timeout(SEARCH_TIMEOUT_MS),
+    });
+
+    if (!searchRes.ok) {
+      throw new Error(
+        `Search API returned HTTP ${searchRes.status} — the service may be temporarily unavailable.`,
+      );
     }
 
-    const json = (await res.json()) as PlayytResponse;
+    const apiData = (await searchRes.json()) as YtDlpApiResponse;
 
-    if (!json.success || !json.data) {
-      throw new Error('The API returned an unsuccessful response.');
+    if (!apiData.media?.mp3) {
+      throw new Error(
+        'No audio URL was returned for this query. Try a different search term.',
+      );
     }
 
-    const { video, download } = json.data;
+    const { mp3: mp3Url, mp4: mp4Url } = apiData.media;
+    const processingTime = apiData.ms ?? 0;
 
-    if (!download.success || !download.audio?.url) {
-      throw new Error('No downloadable audio was found for that query.');
-    }
+    // ── Step 2: Update loading message while downloading the audio ─────────
 
-    const audio = download.audio;
-
-    // Step 2 — Show metadata while downloading
-    if (waitId) {
+    if (loadingId) {
       await chat.editMessage({
         style: MessageStyle.MARKDOWN,
-        message_id_to_edit: waitId as string,
-        message:
-          `🎵 Found: **${video.title}**\n` +
-          `👤 ${video.author.name} · ⏱️ ${video.duration.formatted}\n` +
-          `⬇️ Downloading...`,
+        message_id_to_edit: loadingId,
+        message: `⬇️  Downloading audio for **${query}**...`,
       });
     }
 
-    // Step 3 — Fetch audio as a buffer
-    const audioRes = await fetch(audio.directLink || audio.url, {
-      signal: AbortSignal.timeout(30000),
+    // ── Step 3: Stream audio binary into a buffer ──────────────────────────
+
+    const audioRes = await fetch(mp3Url, {
+      signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS),
     });
-    if (!audioRes.ok)
-      throw new Error(`Audio fetch failed (${audioRes.status})`);
+
+    if (!audioRes.ok) {
+      throw new Error(
+        `Audio download failed with HTTP ${audioRes.status}. The link may have expired — try again.`,
+      );
+    }
+
     const audioBuffer = Buffer.from(await audioRes.arrayBuffer());
 
-    if (waitId) await chat.unsendMessage(waitId as string).catch(() => {});
+    if (audioBuffer.length === 0) {
+      throw new Error(
+        'The downloaded audio file is empty. The source may no longer be available.',
+      );
+    }
 
-    // Step 4 — Build the info caption and send with the audio attachment
+    // ── Step 4: Dismiss loading message and send the audio attachment ──────
+
+    if (loadingId) {
+      await chat.unsendMessage(loadingId).catch(() => {
+        // Ignore — the message may have already been deleted or unsend is unsupported
+      });
+    }
+
+    const fileSizeKb = Math.round(audioBuffer.length / 1024);
+    const fileSizeLabel =
+      fileSizeKb >= 1024
+        ? `${(fileSizeKb / 1024).toFixed(1)} MB`
+        : `${fileSizeKb} KB`;
+
     const caption = [
-      `🎵 **${video.title}**`,
-      ``,
-      `👤 **Artist/Channel:** ${video.author.name}`,
-      `⏱️ **Duration:** ${video.duration.formatted}`,
-      `👁️ **Views:** ${formatViews(video.views)}`,
-      `📅 **Uploaded:** ${video.uploaded}`,
-      `🔊 **Quality:** ${audio.bitrate} · ${audio.format.toUpperCase()}`,
-      `🔗 **YouTube:** ${video.url}`,
+      `🎵  **${query}**`,
+      '',
+      `📦  **File Size**     ${fileSizeLabel}`,
+      `⚡  **Processed in**  ${formatMs(processingTime)}`,
+      `🎬  **Video**         ${mp4Url}`,
     ].join('\n');
 
-    await chat.reply({
+    await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
       message: caption,
       attachment: [
         {
-          name:
-            audio.filename ||
-            `${video.title.replace(/[/\\?%*:|"<>]/g, '-')}.mp3`,
+          name: safeFilename(query),
           stream: audioBuffer,
         },
       ],
     });
   } catch (err) {
     const error = err as { message?: string };
-    if (waitId) await chat.unsendMessage(waitId as string).catch(() => {});
+
+    // Always clean up the loading indicator on failure
+    if (loadingId) {
+      await chat.unsendMessage(loadingId).catch(() => {});
+    }
+
     await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
-      message: `❌ **Failed to fetch audio.**\n\`${error.message ?? 'Unknown error'}\``,
+      message: [
+        `❌  **Could not retrieve audio for** \`${query}\``,
+        `\`${error.message ?? 'An unexpected error occurred.'}\``,
+      ].join('\n'),
     });
   }
 };

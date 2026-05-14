@@ -5,27 +5,6 @@
  * user. Combines platform identity data (display name, username, user ID,
  * platform) with bot-system statistics (role, status, economy, progression)
  * in a clean, professional layout.
- *
- * Data sources:
- *   user.getInfo()              → platform identity (name, username, ID, avatar)
- *   isSystemAdmin               → global system-level privilege check
- *   isBotAdmin                  → session-scoped admin privilege check
- *   isBotPremium                → premium membership check
- *   isUserBanned                → ban status check
- *   db.users.collection('money')→ coin balance, daily streak, last claim timestamp
- *   db.users.collection('xp')   → raw accumulated experience points
- *   db.users.getAll()           → full-session leaderboard for rank computation
- *
- * Collection schema (bot_users_session.data):
- *   "money" key: { coins: number, lastClaim: number (ms), streak: number }
- *   "xp" key:    { exp: number }
- *
- * All data reads are fail-open: a missing collection, unavailable session
- * identity, or network error falls back to a safe zero-value default so the
- * profile always renders a complete, consistent output.
- *
- * Aliases: /me, /userinfo
- * Access:  ANYONE (self) — @mention path resolves any reachable user
  */
 
 import type { AppCtx } from '@/engine/types/controller.types.js';
@@ -37,18 +16,14 @@ import { isSystemAdmin } from '@/engine/repos/system-admin.repo.js';
 import { isUserBanned } from '@/engine/repos/banned.repo.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
 
-// ── Level formula (mirrors /rank — must stay in sync) ─────────────────────────
-// DELTA_NEXT controls the EXP curve: higher value = slower level progression.
-
+// ── Level formula ─────────────────────────────────────────────────────────────
 const DELTA_NEXT = 5;
 
-/** Converts raw accumulated EXP to a discrete level number. */
 function expToLevel(exp: number): number {
   if (exp <= 0) return 0;
   return Math.floor((1 + Math.sqrt(1 + (8 * exp) / DELTA_NEXT)) / 2);
 }
 
-/** Returns the minimum cumulative EXP required to reach a given level. */
 function levelToExp(level: number): number {
   if (level <= 0) return 0;
   return Math.floor(((level * level - level) * DELTA_NEXT) / 2);
@@ -56,10 +31,6 @@ function levelToExp(level: number): number {
 
 // ── Utility helpers ────────────────────────────────────────────────────────────
 
-/**
- * Returns a concise human-readable relative time string for a past timestamp.
- * Kept intentionally brief for inline profile display (e.g. "3h ago", "2d ago").
- */
 function relativeTime(elapsedMs: number): string {
   const totalSeconds = Math.floor(elapsedMs / 1000);
   if (totalSeconds < 60) return `${totalSeconds}s ago`;
@@ -71,10 +42,6 @@ function relativeTime(elapsedMs: number): string {
   return `${days}d ago`;
 }
 
-/**
- * Converts a platform identifier string to a readable display label.
- * e.g. "facebook-messenger" → "Facebook Messenger"
- */
 function formatPlatformLabel(platform: string): string {
   return platform
     .split('-')
@@ -82,9 +49,6 @@ function formatPlatformLabel(platform: string): string {
     .join(' ');
 }
 
-/**
- * Creates a text-based visual progress bar.
- */
 function renderProgressBar(percentage: number, length: number = 10): string {
   const clampedPct = Math.max(0, Math.min(100, percentage));
   const filledCount = Math.round((clampedPct / 100) * length);
@@ -100,8 +64,7 @@ export const config: CommandConfig = {
   version: '1.0.0',
   role: Role.ANYONE,
   author: 'AjiroDesu',
-  description:
-    'Display a complete profile — identity, role, economy, and progression',
+  description: 'Display a complete profile — identity, role, economy, and progression',
   category: 'Utility',
   usage: '[@mention]',
   cooldown: 5,
@@ -132,9 +95,7 @@ export const onCommand = async ({
   const mentionIDs = Object.keys(mentions ?? {});
   const senderID = event['senderID'] as string | undefined;
 
-  // Resolve target user: first @mention takes priority, falls back to the sender.
-  const targetID: string | undefined =
-    mentionIDs.length > 0 ? mentionIDs[0] : senderID;
+  const targetID: string | undefined = mentionIDs.length > 0 ? mentionIDs[0] : senderID;
 
   if (!targetID) {
     await chat.replyMessage({
@@ -144,20 +105,15 @@ export const onCommand = async ({
     return;
   }
 
-  // ── Platform identity ──────────────────────────────────────────────────────
-
+  // ── Platform identity ──
   let displayName = '';
   let username: string | null = null;
-  let avatarUrl: string | null = null;
 
   try {
     const info = await user.getInfo(targetID);
     displayName = info.name || '';
     username = info.username ?? null;
-    avatarUrl = info.avatarUrl ?? null;
-  } catch {
-    // getInfo() unavailable — getName() provides the minimal display name below
-  }
+  } catch { /* Fallback handled below */ }
 
   if (mentionIDs.length > 0 && mentions?.[targetID]) {
     displayName = mentions[targetID].replace(/^@/, '');
@@ -167,8 +123,7 @@ export const onCommand = async ({
     displayName = await user.getName(targetID);
   }
 
-  // ── Bot role and status ────────────────────────────────────────────────────
-
+  // ── Bot role and status ──
   let roleLabel = 'Member';
   let statusLabel = '🟢 Active';
 
@@ -186,13 +141,10 @@ export const onCommand = async ({
       else if (premium) roleLabel = 'Premium Member';
 
       if (banned) statusLabel = '🔴 Banned';
-    } catch {
-      // Fail-open
-    }
+    } catch { /* Fail-open */ }
   }
 
-  // ── Economy data ───────────────────────────────────────────────────────────
-
+  // ── Economy data ──
   let coins = 0;
   let streak = 0;
   let lastClaimLabel = 'Never';
@@ -211,12 +163,9 @@ export const onCommand = async ({
         lastClaimLabel = relativeTime(Date.now() - rawLastClaim);
       }
     }
-  } catch {
-    // Fail-open
-  }
+  } catch { /* Fail-open */ }
 
-  // ── Progression data ───────────────────────────────────────────────────────
-
+  // ── Progression data ──
   let exp = 0;
   let leaderboardRank = 1;
   let totalRanked = 1;
@@ -230,69 +179,52 @@ export const onCommand = async ({
       exp = typeof rawExp === 'number' ? rawExp : 0;
     }
 
-    if (userId && platform && sessionId) {
-      const allSessions = await db.users.getAll();
+    const allSessions = await db.users.getAll();
+    const leaderboard = allSessions
+      .map(({ botUserId, data }) => {
+        const xpData = data?.['xp'] as Record<string, unknown> | undefined;
+        const userExp = xpData && typeof xpData['exp'] === 'number' ? xpData['exp'] : 0;
+        return { botUserId, exp: userExp };
+      })
+      .sort((a, b) => b.exp - a.exp);
 
-      const leaderboard = allSessions
-        .map(({ botUserId, data }) => {
-          const xpData = data?.['xp'] as Record<string, unknown> | undefined;
-          const userExp =
-            xpData && typeof xpData['exp'] === 'number'
-              ? (xpData['exp'] as number)
-              : 0;
-          return { botUserId, exp: userExp };
-        })
-        .sort((a, b) => b.exp - a.exp);
-
-      totalRanked = Math.max(1, leaderboard.length);
-      const pos = leaderboard.findIndex((entry) => entry.botUserId === targetID);
-      if (pos !== -1) leaderboardRank = pos + 1;
-    }
-  } catch {
-    // Fail-open
-  }
-
-  // ── EXP progress computation ───────────────────────────────────────────────
+    totalRanked = Math.max(1, leaderboard.length);
+    const pos = leaderboard.findIndex((entry) => entry.botUserId === targetID);
+    if (pos !== -1) leaderboardRank = pos + 1;
+  } catch { /* Fail-open */ }
 
   const level = expToLevel(exp);
   const currentBase = levelToExp(level);
   const nextBase = levelToExp(level + 1);
   const progressExp = exp - currentBase;
   const expNeeded = nextBase - currentBase;
-  const progressPct =
-    expNeeded > 0 ? Math.round((progressExp / expNeeded) * 100) : 100;
+  const progressPct = expNeeded > 0 ? Math.round((progressExp / expNeeded) * 100) : 100;
 
-  // ── Compose and send the profile message ──────────────────────────────────
-
+  // ── Compose final message ──
   const platformLabel = platform ? formatPlatformLabel(platform) : 'Unknown';
   const usernameTag = username ? ` | 🔗 @${username}` : '';
   const streakUnit = streak === 1 ? 'day' : 'days';
   const progressBar = renderProgressBar(progressPct, 12);
 
-  // Structured for high visual hierarchy using blockquotes and section headers
   const lines: string[] = [
-    `👤 **Profile**: **${displayName}**`,
+    `**👤 Profile: ${displayName}**`,
     `▫️ 🆔 \`${targetID}\`${usernameTag}`,
     '',
-    `🛡️ **Account Info**`,
+    `**🛡️ Account Info**`,
     `▫️ **Platform:** 🌐 ${platformLabel}`,
     `▫️ **Role:** 🎖️ ${roleLabel}`,
     `▫️ **Status:** ${statusLabel}`,
     '',
-    `💼 **Economy**`,
+    `**💼 Economy**`,
     `▫️ **Balance:** 💰 ${coins.toLocaleString()} Coins`,
     `▫️ **Streak:** 🔥 ${streak} ${streakUnit}`,
     `▫️ **Last Claim:** ⏱️ ${lastClaimLabel}`,
     '',
-    `📈 **Progression**`,
+    `**📈 Progression**`,
     `▫️ **Level:** ⭐ ${level} *(Rank #${leaderboardRank} of ${totalRanked})*`,
     `▫️ **EXP:** \`[${progressBar}]\` **${progressPct}%**`,
     `▫️ *${progressExp.toLocaleString()} / ${expNeeded.toLocaleString()} to Level ${level + 1}*`,
   ];
-
-  if (avatarUrl) {
-    lines.push('', `🔗 **[View Full Avatar](${avatarUrl})**`);
-  }
 
   await chat.replyMessage({
     style: MessageStyle.MARKDOWN,
