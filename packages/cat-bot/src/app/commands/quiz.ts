@@ -3,22 +3,33 @@
  *
  * Fetches a boolean True/False question from the Open Trivia Database.
  *
+ * ── Coin rewards ─────────────────────────────────────────────────────────────
+ * Correct answers earn coins based on difficulty:
+ *   easy   → REWARD_COINS.easy   (50 coins)
+ *   medium → REWARD_COINS.medium (100 coins)
+ *   hard   → REWARD_COINS.hard   (200 coins)
+ *
+ * Coins are credited via currencies.increaseMoney() (same API as /daily).
+ * A 💰 Balance button is shown alongside 🔄 Play Again on the result message
+ * so the user can immediately check their updated total.
+ *
  * ── Platform-split answer flow ───────────────────────────────────────────────
  *
  *   Discord & Telegram  → native inline buttons (✅ True | ❌ False)
  *     1. onCommand sends the question with two answer buttons.
  *     2. button.createContext() stores the answer so each onClick handler
  *        can evaluate the user's choice without re-fetching.
- *     3. On click, the message is edited in-place to reveal the result
- *        and a 🔄 Play Again button replaces the answer buttons.
+ *     3. On click, the message is edited in-place to reveal the result,
+ *        coins are awarded (on correct), and 🔄 Play Again + 💰 Balance
+ *        buttons replace the answer buttons.
  *     4. Clicking Play Again re-edits the SAME message in-place with a
  *        brand-new question (and fresh True/False buttons), preserving the
  *        same difficulty. (Matches the RPS command pattern for cleaner chat.)
  *     5. A setTimeout reveals the answer if no button is pressed within
- *        TIMEOUT_MS, editing the message AND adding a 🔄 Play Again button
- *        (new requirement).
+ *        TIMEOUT_MS, editing the message AND adding a 🔄 Play Again button.
  *
  *   Facebook Messenger & Facebook Page  → emoji reactions (original flow)
+ *     Correct reactions also earn coins and post the updated balance.
  *
  * ── Difficulty ───────────────────────────────────────────────────────────────
  * Accepts an optional argument: easy | medium | hard. Any other value (or none)
@@ -32,16 +43,17 @@ import { OptionType } from '@/engine/modules/command/command-option.constants.js
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
+import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
 
 export const config: CommandConfig = {
   name: 'quiz',
   aliases: ['trivia'] as string[],
-  version: '1.3.2', // ← version bumped
+  version: '1.4.0', // ← version bumped
   role: Role.ANYONE,
   author: 'John Lester',
   description:
-    'Answer a True/False trivia question. Buttons on Discord/Telegram, reactions on Facebook.',
+    'Answer a True/False trivia question. Buttons on Discord/Telegram, reactions on Facebook. Earn coins for correct answers!',
   category: 'Games',
   usage: '[easy | medium | hard]',
   cooldown: 10,
@@ -68,11 +80,19 @@ const REACT = {
   FALSE: '😢',
 } as const;
 
-/** Local IDs for the answer + play-again buttons (Discord & Telegram only). */
+/** Coins awarded for a correct answer per difficulty level. */
+const REWARD_COINS: Record<Difficulty, number> = {
+  easy: 50,
+  medium: 100,
+  hard: 200,
+};
+
+/** Local IDs for the answer + play-again + balance buttons (Discord & Telegram only). */
 const BUTTON_ID = {
   true: 'true',
   false: 'false',
   playAgain: 'play_again',
+  balance: 'balance',
 } as const;
 
 interface TriviaResult {
@@ -144,12 +164,23 @@ async function runButtonQuiz(
   const question = decodeURIComponent(result.question);
   const category = decodeURIComponent(result.category);
   const answer = result.correct_answer;
+  const reward = REWARD_COINS[difficulty];
 
   const trueId = btn.generateID({ id: BUTTON_ID.true, public: true });
   const falseId = btn.generateID({ id: BUTTON_ID.false, public: true });
 
   const isFromButtonAction = event?.['type'] === 'button_action';
   let messageID: string | number | null = null;
+
+  const questionBody = [
+    `🧠 **Trivia Quiz** — _${difficulty}_ · ${category}`,
+    ``,
+    question,
+    ``,
+    `💰 Reward: **${reward} coins** for a correct answer`,
+    ``,
+    `_You have ${TIMEOUT_MS / 1000} seconds to answer!_`,
+  ].join('\n');
 
   if (isFromButtonAction) {
     // Play Again: edit the existing message in-place (RPS-style)
@@ -168,26 +199,14 @@ async function runButtonQuiz(
     await chat.editMessage({
       style: MessageStyle.MARKDOWN,
       message_id_to_edit: String(messageID),
-      message: [
-        `🧠 **Trivia Quiz** — _${difficulty}_ · ${category}`,
-        ``,
-        question,
-        ``,
-        `_You have ${TIMEOUT_MS / 1000} seconds to answer!_`,
-      ].join('\n'),
+      message: questionBody,
       button: [trueId, falseId],
     });
   } else {
     // Initial command: send a brand-new message
     messageID = (await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
-      message: [
-        `🧠 **Trivia Quiz** — _${difficulty}_ · ${category}`,
-        ``,
-        question,
-        ``,
-        `_You have ${TIMEOUT_MS / 1000} seconds to answer!_`,
-      ].join('\n'),
+      message: questionBody,
       button: [trueId, falseId],
     })) as string | number | null;
   }
@@ -222,13 +241,12 @@ async function runButtonQuiz(
   btn.createContext({ id: trueId, context: quizCtx });
   btn.createContext({ id: falseId, context: quizCtx });
 
-  // Timeout: reveal the answer + add Play Again button (NEW)
+  // Timeout: reveal the answer + add Play Again button
   const timeoutHandle = setTimeout(() => {
     if (pendingAnswers.get(msgIdStr) === true) return;
     pendingAnswers.delete(msgIdStr);
     timeouts.delete(msgIdStr);
 
-    // ── Generate Play Again button exactly like in showButtonResult ──
     const playAgainId = btn.generateID({
       id: BUTTON_ID.playAgain,
       public: true,
@@ -248,7 +266,7 @@ async function runButtonQuiz(
         ``,
         `⏰ **Time's up!** The correct answer was **${answer}**.`,
       ].join('\n'),
-      button: [playAgainId], // ← Play Again button now appears on timeout
+      button: [playAgainId],
     });
   }, TIMEOUT_MS);
 
@@ -260,7 +278,7 @@ async function showButtonResult(
   ctx: AppCtx,
   userAnswer: 'True' | 'False',
 ): Promise<void> {
-  const { chat, event, session, button: btn } = ctx;
+  const { chat, event, session, button: btn, currencies, native } = ctx;
   const quizCtx = session.context as Partial<ButtonQuizContext>;
   const msgId = quizCtx.messageID ?? (event['messageID'] as string);
   const answer = quizCtx.answer ?? '';
@@ -282,16 +300,38 @@ async function showButtonResult(
   btn.deleteContext(session.id);
 
   const isCorrect = userAnswer === answer;
+  const reward = REWARD_COINS[difficulty];
+
+  // ── Award coins for a correct answer ──────────────────────────────────────
+  let coinLine = '';
+  if (isCorrect) {
+    const senderID = event['senderID'] as string | undefined;
+    if (senderID) {
+      await currencies.increaseMoney({ user_id: senderID, money: reward });
+      coinLine = `\n💰 **+${reward} coins** added to your balance!`;
+    }
+  }
+
   const resultLine = isCorrect
-    ? `✅ **Correct!** The answer was **${answer}**. Well done! 🎉`
+    ? `✅ **Correct!** The answer was **${answer}**. Well done! 🎉${coinLine}`
     : `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${answer}**. 😔`;
 
-  // Generate Play Again button and store the difficulty
+  // Generate Play Again + Balance buttons
   const playAgainId = btn.generateID({ id: BUTTON_ID.playAgain, public: true });
   btn.createContext({
     id: playAgainId,
     context: { difficulty } satisfies Record<string, unknown>,
   });
+
+  const balanceId = btn.generateID({ id: BUTTON_ID.balance, public: true });
+  btn.createContext({
+    id: balanceId,
+    context: {} satisfies Record<string, unknown>,
+  });
+
+  const actionButtons = hasNativeButtons(native.platform)
+    ? [playAgainId, balanceId]
+    : [playAgainId];
 
   await chat.editMessage({
     style: MessageStyle.MARKDOWN,
@@ -303,7 +343,7 @@ async function showButtonResult(
       ``,
       resultLine,
     ].join('\n'),
-    button: [playAgainId],
+    button: actionButtons,
   });
 }
 
@@ -344,6 +384,48 @@ export const button = {
       btn.deleteContext(session.id);
 
       await runButtonQuiz(ctx, difficulty);
+    },
+  },
+
+  // ── 💰 Balance ──────────────────────────────────────────────────────────────
+  // Shows the user's current coin balance in-place, with a ⬅ Back button to
+  // return to the quiz result without re-running the command.
+  [BUTTON_ID.balance]: {
+    label: '💰 Balance',
+    style: ButtonStyle.SECONDARY,
+    onClick: async (ctx: AppCtx) => {
+      const { chat, event, currencies, button: btn, session } = ctx;
+
+      const senderID = event['senderID'] as string | undefined;
+      const msgId = event['messageID'] as string | undefined;
+
+      // Generate a back button so the user can return to the quiz result
+      const backId = btn.generateID({ id: BUTTON_ID.balance, public: true });
+      btn.createContext({
+        id: backId,
+        context: {} satisfies Record<string, unknown>,
+      });
+
+      if (!senderID || !msgId) {
+        await chat.editMessage({
+          style: MessageStyle.MARKDOWN,
+          message_id_to_edit: msgId ?? '',
+          message: '❌ Could not identify your user ID on this platform.',
+        });
+        return;
+      }
+
+      // Clean up the current balance button context before generating a new one
+      btn.deleteContext(session.id);
+
+      const coins = await currencies.getMoney(senderID);
+
+      await chat.editMessage({
+        style: MessageStyle.MARKDOWN,
+        message_id_to_edit: msgId,
+        message: `💰 **Your balance:** ${coins.toLocaleString()} coins`,
+        button: [backId],
+      });
     },
   },
 };
@@ -403,6 +485,7 @@ export const onCommand = async ({
   const question = decodeURIComponent(result.question);
   const category = decodeURIComponent(result.category);
   const answer = result.correct_answer;
+  const reward = REWARD_COINS[difficulty];
 
   const messageID = await chat.replyMessage({
     style: MessageStyle.MARKDOWN,
@@ -410,6 +493,8 @@ export const onCommand = async ({
       `🧠 **Trivia Quiz** — _${difficulty}_ · ${category}`,
       ``,
       question,
+      ``,
+      `💰 Reward: **${reward} coins** for a correct answer`,
       ``,
       `❤️ → **True**   |   😢 → **False**`,
       `_You have ${TIMEOUT_MS / 1000} seconds to react!_`,
@@ -456,22 +541,35 @@ export const onCommand = async ({
 
 // ── Shared reaction evaluator (FB flow) ───────────────────────────────────────
 async function handleReact(
-  { chat, session, state }: AppCtx,
+  { chat, session, state, event, currencies }: AppCtx,
   userAnswer: 'True' | 'False',
 ): Promise<void> {
   const ctx = session.context as Partial<ReactQuizContext>;
   const msgId = ctx.messageID ?? '';
   const correctAnswer = ctx.answer ?? '';
+  const difficulty = (ctx.difficulty ?? 'medium') as Difficulty;
 
   pendingAnswers.set(msgId, true);
   state.delete(session.id);
 
   const isCorrect = userAnswer === correctAnswer;
+  const reward = REWARD_COINS[difficulty];
+
+  // ── Award coins for a correct answer (FB flow) ────────────────────────────
+  let coinLine = '';
+  if (isCorrect) {
+    const senderID = event['senderID'] as string | undefined;
+    if (senderID) {
+      await currencies.increaseMoney({ user_id: senderID, money: reward });
+      const newBalance = await currencies.getMoney(senderID);
+      coinLine = `\n💰 **+${reward} coins** added! Balance: **${newBalance.toLocaleString()} coins**`;
+    }
+  }
 
   await chat.reply({
     style: MessageStyle.MARKDOWN,
     message: isCorrect
-      ? `✅ **Correct!** The answer was **${correctAnswer}**. Well done! 🎉`
+      ? `✅ **Correct!** The answer was **${correctAnswer}**. Well done! 🎉${coinLine}`
       : `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${correctAnswer}**. 😔`,
   });
 }
