@@ -1,47 +1,61 @@
 /**
- * /quiz — True/False Trivia Game
+ * /quiz — True/False Trivia Game (Economy Integration)
  *
- * Fetches a boolean True/False question from the Open Trivia Database.
+ * Fetches a boolean True/False question from the Open Trivia Database and
+ * awards coins for correct answers. All economy logic follows the existing
+ * codebase patterns exactly:
  *
- * ── Coin rewards ─────────────────────────────────────────────────────────────
- * Correct answers earn coins based on difficulty:
- *   easy   → REWARD_COINS.easy   (50 coins)
- *   medium → REWARD_COINS.medium (100 coins)
- *   hard   → REWARD_COINS.hard   (200 coins)
+ * ── Economy patterns used ────────────────────────────────────────────────────
  *
- * Coins are credited via currencies.increaseMoney() (same API as /daily).
- * A 💰 Balance button is shown alongside 🔄 Play Again on the result message
- * so the user can immediately check their updated total.
+ *   db.users.collection (daily/work/fish pattern)
+ *     Every stat is persisted in a "quiz" collection on bot_users_session.data.
+ *     Collection is initialised on first use (isCollectionExist → createCollection).
+ *     Each field is written with an individual set() call to keep intent explicit.
  *
- * ── Button navigation (Discord & Telegram) ───────────────────────────────────
- * Result card  →  [🔄 Play Again]  [💰 Balance]
- * Balance view →  [⬅ Back]
- * ⬅ Back restores the full result card (question + verdict + both buttons)
- * by replaying the stored result text from the balance button's context.
+ *   Collection schema (bot_users_session.data → "quiz" key):
+ *     { wins, losses, totalEarned, questionCount }
+ *
+ *   currencies API (transfer/fish pattern)
+ *     increaseMoney() is fully awaited before getMoney() is called so the
+ *     balance read is always post-credit and never stale.
+ *
+ *   Button context (slot.ts pattern)
+ *     After an answer, a QuizResultBtnCtx object is stored in BOTH the
+ *     💰 Balance and ⬅ Back button contexts. Each button therefore knows
+ *     the other button's stable ID — no ID regeneration on navigation.
+ *     A typed context-reader helper (readResultBtnCtx) mirrors readSlotButtonContext.
+ *
+ *   Button scoping (fish/work/rps pattern)
+ *     ✅ True / ❌ False / 🔄 Play Again → public: true  (group trivia — any member can play)
+ *     💰 Balance / ⬅ Back              → public: false (scoped to the answering user)
+ *
+ *   hasNativeButtons (daily/work/fish/slot pattern)
+ *     All button injection is gated with hasNativeButtons(native.platform).
+ *     The isButtonPlatform helper is retained only for the top-level
+ *     Discord/Telegram vs Facebook branch split.
  *
  * ── Platform-split answer flow ───────────────────────────────────────────────
  *
- *   Discord & Telegram  → native inline buttons (✅ True | ❌ False)
- *     1. onCommand sends the question with two answer buttons.
- *     2. button.createContext() stores the answer so each onClick handler
- *        can evaluate the user's choice without re-fetching.
- *     3. On click, the message is edited in-place to reveal the result,
- *        coins are awarded (on correct), and 🔄 Play Again + 💰 Balance
- *        buttons replace the answer buttons.
- *     4. Clicking Play Again re-edits the SAME message in-place with a
- *        brand-new question (and fresh True/False buttons), preserving the
- *        same difficulty.
- *     5. A setTimeout reveals the answer if no button is pressed within
- *        TIMEOUT_MS, editing the message AND adding a 🔄 Play Again button.
+ *   Discord & Telegram  → native inline buttons
+ *     1. onCommand sends the question with ✅ True / ❌ False.
+ *     2. ButtonQuizContext stores the correct answer per-message.
+ *     3. On click: stats updated, coins credited, result card edited in-place.
+ *        Result card shows [🔄 Play Again] [💰 Balance].
+ *     4. 💰 Balance: edits card to live balance + [⬅ Back] (slot toggle pattern).
+ *     5. ⬅ Back: restores the exact result card from stored context.
+ *     6. A setTimeout reveals the answer on TIMEOUT_MS with a 🔄 Play Again button.
  *
- *   Facebook Messenger & Facebook Page  → emoji reactions (original flow)
- *     Correct reactions also earn coins. The reply shows the earned coins and
- *     the confirmed post-credit balance (getMoney is called AFTER increaseMoney
- *     resolves so the number is always accurate).
+ *   Facebook Messenger & Facebook Page  → emoji reactions
+ *     ❤️ / ❤ → True   |   😢 → False
+ *     Correct answers award coins via the same economy API. The reply includes
+ *     the earned coins, the post-credit balance (getMoney after increaseMoney),
+ *     and the running quiz stats, all with proper spacing.
  *
  * ── Difficulty ───────────────────────────────────────────────────────────────
- * Accepts an optional argument: easy | medium | hard. Any other value (or none)
- * selects a difficulty at random. Play Again preserves the previous difficulty.
+ *   easy → 50 coins | medium → 100 coins | hard → 200 coins
+ *   Accepts an optional argument: easy | medium | hard.
+ *   Any other value (or none) picks a difficulty at random.
+ *   Play Again preserves the previous difficulty.
  */
 
 import axios from 'axios';
@@ -57,12 +71,12 @@ import type { CommandConfig } from '@/engine/types/module-config.types.js';
 export const config: CommandConfig = {
   name: 'quiz',
   aliases: ['trivia'] as string[],
-  version: '1.5.0',
+  version: '2.0.0',
   role: Role.ANYONE,
   author: 'John Lester',
   description:
-    'Answer a True/False trivia question. Buttons on Discord/Telegram, reactions on Facebook. Earn coins for correct answers!',
-  category: 'Games',
+    'Answer a True/False trivia question and earn coins for correct answers. Stats are tracked per user.',
+  category: 'Economy',
   usage: '[easy | medium | hard]',
   cooldown: 10,
   hasPrefix: true,
@@ -77,7 +91,7 @@ export const config: CommandConfig = {
   ],
 };
 
-// ── Types ─────────────────────────────────────────────────────────────────────
+// ── Constants ─────────────────────────────────────────────────────────────────
 
 const DIFFICULTIES = ['easy', 'medium', 'hard'] as const;
 type Difficulty = (typeof DIFFICULTIES)[number];
@@ -88,7 +102,10 @@ const REACT = {
   FALSE: '😢',
 } as const;
 
-/** Coins awarded for a correct answer per difficulty level. */
+/**
+ * Coin reward per difficulty (easy → low risk/reward, hard → high risk/reward).
+ * Mirrors the pay-range scaling used in /work and /fish.
+ */
 const REWARD_COINS: Record<Difficulty, number> = {
   easy: 50,
   medium: 100,
@@ -96,14 +113,13 @@ const REWARD_COINS: Record<Difficulty, number> = {
 };
 
 /**
- * Local IDs for every button this command registers.
+ * Button IDs registered by this command.
  *
  * Navigation flow (Discord & Telegram):
- *
- *   [✅ True / ❌ False]  →  answer evaluated
- *   Result card           →  [🔄 play_again]  [💰 balance]
- *   Balance view          →  [⬅ back]
- *   ⬅ back               →  result card restored
+ *   [✅ true / ❌ false] → answer evaluated
+ *   Result card          → [🔄 play_again]  [💰 balance]
+ *   Balance view         → [⬅ back]
+ *   ⬅ back              → result card restored
  */
 const BUTTON_ID = {
   true: 'true',
@@ -112,6 +128,10 @@ const BUTTON_ID = {
   balance: 'balance',
   back: 'back',
 } as const;
+
+const TIMEOUT_MS = 20_000;
+
+// ── Types ─────────────────────────────────────────────────────────────────────
 
 interface TriviaResult {
   question: string;
@@ -125,6 +145,7 @@ interface TriviaResponse {
   results: TriviaResult[];
 }
 
+/** Stored in the ✅/❌ answer button contexts (holds question data per message). */
 interface ButtonQuizContext extends Record<string, unknown> {
   answer: string;
   question: string;
@@ -133,18 +154,7 @@ interface ButtonQuizContext extends Record<string, unknown> {
   category: string;
 }
 
-/**
- * Stored inside the 💰 Balance and ⬅ Back button contexts so clicking
- * ⬅ Back can fully reconstruct the result card without re-fetching anything.
- */
-interface ResultCardContext extends Record<string, unknown> {
-  /** The rendered verdict paragraph (correct/wrong line + coin block). */
-  resultBody: string;
-  question: string;
-  difficulty: Difficulty;
-  category: string;
-}
-
+/** Stored in the state system for the FB emoji-reaction flow. */
 interface ReactQuizContext extends Record<string, unknown> {
   answer: string;
   question: string;
@@ -153,73 +163,104 @@ interface ReactQuizContext extends Record<string, unknown> {
   category: string;
 }
 
+/**
+ * Stored in BOTH the 💰 Balance and ⬅ Back button contexts (slot.ts pattern).
+ * Each button holds the other's stable ID so navigation can toggle without
+ * regenerating IDs on every click.
+ */
+interface QuizResultBtnCtx extends Record<string, unknown> {
+  /** Full rendered result card text — restored verbatim by ⬅ Back. */
+  resultMessage: string;
+  /** Stable play_again button ID — back button restores this into the result card. */
+  playAgainId: string;
+  /** Stable balance button ID — back button restores this into the result card. */
+  balanceId: string;
+  /** Stable back button ID — balance button attaches this to the balance view. */
+  backId: string;
+}
+
+/** Quiz stats persisted in the "quiz" collection (fish/work schema pattern). */
+interface QuizStats {
+  wins: number;
+  losses: number;
+  totalEarned: number;
+  questionCount: number;
+}
+
 // ── Module-level trackers ─────────────────────────────────────────────────────
 const pendingAnswers = new Map<string, boolean>();
 const timeouts = new Map<string, ReturnType<typeof setTimeout>>();
-
-const TIMEOUT_MS = 20_000;
 
 // ── Platform helper ───────────────────────────────────────────────────────────
 function isButtonPlatform(platform: string): boolean {
   return platform === Platforms.Discord || platform === Platforms.Telegram;
 }
 
-// ── Result-card renderer ──────────────────────────────────────────────────────
+// ── Collection helpers (db.users.collection — fish/work/daily pattern) ────────
+
 /**
- * Edits the quiz message to show the result card with 🔄 Play Again and
- * 💰 Balance buttons. Extracted so both showButtonResult and the ⬅ Back
- * handler share identical rendering without duplicating logic.
- *
- * The full result card context is stored inside the balance button so that
- * clicking ⬅ Back can restore this card verbatim from context alone.
+ * Returns the "quiz" collection for the given user, creating it on first use.
+ * Mirrors getSlotCollection / fish collection init exactly.
  */
-async function renderResultCard(
-  ctx: AppCtx,
-  opts: {
-    msgId: string;
-    question: string;
-    difficulty: Difficulty;
-    category: string;
-    resultBody: string;
-  },
-): Promise<void> {
-  const { chat, button: btn } = ctx;
-  const { msgId, question, difficulty, category, resultBody } = opts;
-
-  // Play Again button — carries only the difficulty so runButtonQuiz can start fresh
-  const playAgainId = btn.generateID({ id: BUTTON_ID.playAgain, public: true });
-  btn.createContext({
-    id: playAgainId,
-    context: { difficulty } satisfies Record<string, unknown>,
-  });
-
-  // Balance button — carries the full card context so ⬅ Back can replay it
-  const cardCtx: ResultCardContext = { resultBody, question, difficulty, category };
-  const balanceId = btn.generateID({ id: BUTTON_ID.balance, public: true });
-  btn.createContext({ id: balanceId, context: cardCtx });
-
-  await chat.editMessage({
-    style: MessageStyle.MARKDOWN,
-    message_id_to_edit: msgId,
-    message: [
-      `🧠 **Trivia Quiz** — _${difficulty}_ · ${category}`,
-      ``,
-      question,
-      ``,
-      resultBody,
-    ].join('\n'),
-    button: [playAgainId, balanceId],
-  });
+async function getQuizCollection(ctx: AppCtx, senderID: string) {
+  const userColl = ctx.db.users.collection(senderID);
+  if (!(await userColl.isCollectionExist('quiz'))) {
+    await userColl.createCollection('quiz');
+  }
+  return userColl.getCollection('quiz');
 }
 
-// ── Core quiz runner (shared by onCommand and Play Again) ─────────────────────
-async function runButtonQuiz(
-  ctx: AppCtx,
-  difficulty: Difficulty,
-): Promise<void> {
-  const { chat, button: btn, event } = ctx;
+/**
+ * Reads the user's quiz stats from the collection.
+ * Returns zeroed defaults when a field has never been written (getMoney pattern).
+ */
+async function readQuizStats(ctx: AppCtx, senderID: string): Promise<QuizStats> {
+  const coll = await getQuizCollection(ctx, senderID);
+  return {
+    wins: ((await coll.get('wins')) as number | undefined) ?? 0,
+    losses: ((await coll.get('losses')) as number | undefined) ?? 0,
+    totalEarned: ((await coll.get('totalEarned')) as number | undefined) ?? 0,
+    questionCount: ((await coll.get('questionCount')) as number | undefined) ?? 0,
+  };
+}
 
-  // Fetch question
+/**
+ * Persists the user's updated quiz stats.
+ * Individual set() calls per field — same explicit pattern as daily/work/fish.
+ */
+async function saveQuizStats(ctx: AppCtx, senderID: string, stats: QuizStats): Promise<void> {
+  const coll = await getQuizCollection(ctx, senderID);
+  await coll.set('wins', stats.wins);
+  await coll.set('losses', stats.losses);
+  await coll.set('totalEarned', stats.totalEarned);
+  await coll.set('questionCount', stats.questionCount);
+}
+
+// ── Context reader (slot.ts readSlotButtonContext pattern) ────────────────────
+
+/**
+ * Safely casts the raw session context to QuizResultBtnCtx.
+ * Returns undefined if any required field is missing, preventing partial state bugs.
+ */
+function readResultBtnCtx(raw: unknown): QuizResultBtnCtx | undefined {
+  const c = raw as Partial<QuizResultBtnCtx> | undefined;
+  if (!c?.resultMessage || !c.playAgainId || !c.balanceId || !c.backId) {
+    return undefined;
+  }
+  return {
+    resultMessage: c.resultMessage,
+    playAgainId: c.playAgainId,
+    balanceId: c.balanceId,
+    backId: c.backId,
+  };
+}
+
+// ── Core quiz runner (shared by onCommand and 🔄 Play Again) ──────────────────
+async function runButtonQuiz(ctx: AppCtx, difficulty: Difficulty): Promise<void> {
+  const { chat, button: btn, event, native } = ctx;
+  const reward = REWARD_COINS[difficulty];
+
+  // ── Fetch question ─────────────────────────────────────────────────────────
   let result: TriviaResult;
   try {
     const response = await axios.get<TriviaResponse>(
@@ -242,8 +283,8 @@ async function runButtonQuiz(
   const question = decodeURIComponent(result.question);
   const category = decodeURIComponent(result.category);
   const answer = result.correct_answer;
-  const reward = REWARD_COINS[difficulty];
 
+  // Answer buttons: public: true — any group member can participate (rps pattern)
   const trueId = btn.generateID({ id: BUTTON_ID.true, public: true });
   const falseId = btn.generateID({ id: BUTTON_ID.false, public: true });
 
@@ -261,6 +302,7 @@ async function runButtonQuiz(
   ].join('\n');
 
   if (isFromButtonAction) {
+    // Play Again: edit existing message in-place (RPS pattern — clean chat)
     const currentMsgID = event['messageID'];
     if (typeof currentMsgID !== 'string' && typeof currentMsgID !== 'number') {
       await chat.replyMessage({
@@ -274,13 +316,14 @@ async function runButtonQuiz(
       style: MessageStyle.MARKDOWN,
       message_id_to_edit: String(messageID),
       message: questionBody,
-      button: [trueId, falseId],
+      ...(hasNativeButtons(native.platform) ? { button: [trueId, falseId] } : {}),
     });
   } else {
+    // Initial command: send a fresh message
     messageID = (await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
       message: questionBody,
-      button: [trueId, falseId],
+      ...(hasNativeButtons(native.platform) ? { button: [trueId, falseId] } : {}),
     })) as string | number | null;
   }
 
@@ -295,6 +338,7 @@ async function runButtonQuiz(
 
   const msgIdStr = String(messageID);
 
+  // Cancel any previous timeout for this message (prevents overlap on Play Again)
   if (timeouts.has(msgIdStr)) {
     clearTimeout(timeouts.get(msgIdStr)!);
     timeouts.delete(msgIdStr);
@@ -302,17 +346,12 @@ async function runButtonQuiz(
 
   pendingAnswers.set(msgIdStr, false);
 
-  const quizCtx: ButtonQuizContext = {
-    answer,
-    question,
-    messageID: msgIdStr,
-    difficulty,
-    category,
-  };
+  // Store the question context in both answer buttons so onClick can evaluate
+  const quizCtx: ButtonQuizContext = { answer, question, messageID: msgIdStr, difficulty, category };
   btn.createContext({ id: trueId, context: quizCtx });
   btn.createContext({ id: falseId, context: quizCtx });
 
-  // Timeout: reveal the answer + Play Again button (no coins — unanswered)
+  // Timeout: reveal answer + Play Again (no coins awarded — no answer was given)
   const timeoutHandle = setTimeout(() => {
     if (pendingAnswers.get(msgIdStr) === true) return;
     pendingAnswers.delete(msgIdStr);
@@ -334,19 +373,17 @@ async function runButtonQuiz(
         ``,
         `⏰ **Time's up!** The correct answer was **${answer}**.`,
       ].join('\n'),
-      button: [playAgainId],
+      ...(hasNativeButtons(native.platform) ? { button: [playAgainId] } : {}),
     });
   }, TIMEOUT_MS);
 
   timeouts.set(msgIdStr, timeoutHandle);
 }
 
-// ── Shared result editor (button flow) ────────────────────────────────────────
-async function showButtonResult(
-  ctx: AppCtx,
-  userAnswer: 'True' | 'False',
-): Promise<void> {
-  const { event, session, button: btn, currencies } = ctx;
+// ── Answer result handler (Discord & Telegram button flow) ────────────────────
+async function showButtonResult(ctx: AppCtx, userAnswer: 'True' | 'False'): Promise<void> {
+  const { chat, event, session, button: btn, currencies, native } = ctx;
+
   const quizCtx = session.context as Partial<ButtonQuizContext>;
   const msgId = quizCtx.messageID ?? (event['messageID'] as string);
   const answer = quizCtx.answer ?? '';
@@ -354,6 +391,7 @@ async function showButtonResult(
   const question = quizCtx.question ?? '';
   const category = quizCtx.category ?? '';
 
+  // Guard: reject double-clicks and stale clicks after timeout
   if (pendingAnswers.get(msgId) === true) return;
   pendingAnswers.set(msgId, true);
 
@@ -362,33 +400,102 @@ async function showButtonResult(
     timeouts.delete(msgId);
   }
 
+  // Clean up answer button contexts — question has been resolved
   btn.deleteContext(session.id);
 
+  const senderID = event['senderID'] as string | undefined;
   const isCorrect = userAnswer === answer;
   const reward = REWARD_COINS[difficulty];
 
-  // ── Award coins and compose the result body ────────────────────────────────
-  let resultBody: string;
+  // ── Update quiz collection + award coins (fish/work/daily pattern) ─────────
+  let stats: QuizStats = { wins: 0, losses: 0, totalEarned: 0, questionCount: 0 };
+  let newBalance = 0;
 
-  if (isCorrect) {
-    const senderID = event['senderID'] as string | undefined;
-    let coinBlock = '';
-    if (senderID) {
-      // increaseMoney must fully resolve before getMoney so the balance is accurate
+  if (senderID) {
+    // Read current stats before mutation
+    stats = await readQuizStats(ctx, senderID);
+    stats.questionCount += 1;
+
+    if (isCorrect) {
+      stats.wins += 1;
+      stats.totalEarned += reward;
+      // Persist stats BEFORE crediting coins (daily pattern: state durable even if message fails)
+      await saveQuizStats(ctx, senderID, stats);
+      // increaseMoney must fully resolve before getMoney — transfer/fish pattern
       await currencies.increaseMoney({ user_id: senderID, money: reward });
-      const newBalance = await currencies.getMoney(senderID);
-      coinBlock = [
-        ``,
-        `💰 **+${reward} coins** earned!`,
-        `📊 Balance: **${newBalance.toLocaleString()} coins**`,
-      ].join('\n');
+      newBalance = await currencies.getMoney(senderID);
+    } else {
+      stats.losses += 1;
+      await saveQuizStats(ctx, senderID, stats);
+      // Still read balance so the result card can show a consistent figure
+      newBalance = await currencies.getMoney(senderID);
     }
-    resultBody = `✅ **Correct!** The answer was **${answer}**. Well done! 🎉${coinBlock}`;
-  } else {
-    resultBody = `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${answer}**. 😔`;
   }
 
-  await renderResultCard(ctx, { msgId, question, difficulty, category, resultBody });
+  // ── Build result message ──────────────────────────────────────────────────
+  const winRate =
+    stats.questionCount > 0
+      ? Math.round((stats.wins / stats.questionCount) * 100)
+      : 0;
+
+  const verdictLine = isCorrect
+    ? `✅ **Correct!** The answer was **${answer}**. Well done! 🎉`
+    : `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${answer}**. 😔`;
+
+  // Coin block only shown on a correct answer (work/fish message pattern)
+  const coinBlock =
+    isCorrect && senderID
+      ? [``, `💰 **+${reward} coins** earned!`, `📊 Balance: **${newBalance.toLocaleString()} coins**`].join('\n')
+      : '';
+
+  // Stats line shown whenever we have a senderID (fish stats-line pattern)
+  const statsLine = senderID
+    ? [
+        ``,
+        `🏆 Wins: **${stats.wins}** | Losses: **${stats.losses}** | Win Rate: **${winRate}%**`,
+        `💎 Lifetime earned: **${stats.totalEarned.toLocaleString()} coins**`,
+      ].join('\n')
+    : '';
+
+  const resultMessage = [
+    `🧠 **Trivia Quiz** — _${difficulty}_ · ${category}`,
+    ``,
+    question,
+    ``,
+    verdictLine,
+    ...(coinBlock ? [coinBlock] : []),
+    ...(statsLine ? [statsLine] : []),
+  ].join('\n');
+
+  // ── Generate buttons (slot.ts pattern) ────────────────────────────────────
+  // playAgain: public: true  — any group member can start a new round
+  // balance:   public: false — scoped to this user (fish/work pattern)
+  // back:      public: false — scoped to this user
+  const playAgainId = btn.generateID({ id: BUTTON_ID.playAgain, public: true });
+  btn.createContext({
+    id: playAgainId,
+    context: { difficulty } satisfies Record<string, unknown>,
+  });
+
+  const balanceId = btn.generateID({ id: BUTTON_ID.balance, public: false });
+  const backId = btn.generateID({ id: BUTTON_ID.back, public: false });
+
+  // Both balance and back receive the same context object containing each
+  // other's stable IDs — slot.ts pattern; no ID regeneration needed on navigation.
+  const btnCtx: QuizResultBtnCtx = { resultMessage, playAgainId, balanceId, backId };
+  btn.createContext({ id: balanceId, context: btnCtx });
+  btn.createContext({ id: backId, context: btnCtx });
+
+  const buttons = senderID
+    ? [playAgainId, balanceId]   // balance only meaningful when we have a user
+    : [playAgainId];
+
+  await chat.editMessage({
+    style: MessageStyle.MARKDOWN,
+    message_id_to_edit: msgId,
+    message: resultMessage,
+    ...(hasNativeButtons(native.platform) ? { button: buttons } : {}),
+  });
 }
 
 // ── Button definitions ────────────────────────────────────────────────────────
@@ -408,6 +515,8 @@ export const button = {
   },
 
   // ── 🔄 Play Again ───────────────────────────────────────────────────────────
+  // Context: { difficulty } — preserved across round restarts (original pattern).
+  // Cleans up its own context before delegating to runButtonQuiz (RPS pattern).
   [BUTTON_ID.playAgain]: {
     label: '🔄 Play Again',
     style: ButtonStyle.PRIMARY,
@@ -426,35 +535,22 @@ export const button = {
   },
 
   // ── 💰 Balance ──────────────────────────────────────────────────────────────
-  // Switches the card to a balance view. The full ResultCardContext is forwarded
-  // into the ⬅ Back button so clicking Back restores the result card exactly.
+  // Switches the card to a live balance view using getMoney (always current).
+  // Attaches ⬅ Back using the stable backId stored in its own context.
+  // Does NOT call deleteContext — context must survive for ⬅ Back to read (slot pattern).
   [BUTTON_ID.balance]: {
     label: '💰 Balance',
     style: ButtonStyle.SECONDARY,
-    onClick: async (ctx: AppCtx) => {
-      const { chat, event, currencies, button: btn, session } = ctx;
-
+    onClick: async ({ chat, event, native, session, currencies }: AppCtx) => {
       const senderID = event['senderID'] as string | undefined;
       const msgId = event['messageID'] as string | undefined;
 
-      // Carry the result card context into the ⬅ Back button before clearing it
-      const cardCtx = session.context as Partial<ResultCardContext>;
-      btn.deleteContext(session.id);
+      const btnCtx = readResultBtnCtx(session.context);
 
-      if (!senderID || !msgId) {
-        await chat.editMessage({
-          style: MessageStyle.MARKDOWN,
-          message_id_to_edit: msgId ?? '',
-          message: '❌ Could not identify your user ID on this platform.',
-        });
-        return;
-      }
+      if (!senderID || !msgId || !btnCtx) return;
 
+      // getMoney returns the live total — always accurate (currencies pattern)
       const coins = await currencies.getMoney(senderID);
-
-      // ⬅ Back button restores the result card using the forwarded context
-      const backId = btn.generateID({ id: BUTTON_ID.back, public: true });
-      btn.createContext({ id: backId, context: cardCtx as Record<string, unknown> });
 
       await chat.editMessage({
         style: MessageStyle.MARKDOWN,
@@ -464,46 +560,44 @@ export const button = {
           ``,
           `📊 Current balance: **${coins.toLocaleString()} coins**`,
         ].join('\n'),
-        button: [backId],
+        // Back button ID is stable — taken from stored context (slot pattern)
+        ...(hasNativeButtons(native.platform) ? { button: [btnCtx.backId] } : {}),
       });
     },
   },
 
   // ── ⬅ Back ──────────────────────────────────────────────────────────────────
-  // Restores the quiz result card from the context stored by the balance button.
-  // No network calls — everything is in ResultCardContext.
+  // Restores the result card verbatim from context — no network call needed.
+  // Re-attaches playAgainId and balanceId from the stored context (slot pattern).
+  // Does NOT call deleteContext — same session context may be used again (toggle loop).
   [BUTTON_ID.back]: {
     label: '⬅ Back',
     style: ButtonStyle.SECONDARY,
-    onClick: async (ctx: AppCtx) => {
-      const { event, session, button: btn, chat } = ctx;
-
-      const cardCtx = session.context as Partial<ResultCardContext>;
+    onClick: async ({ chat, event, native, session }: AppCtx) => {
       const msgId = event['messageID'] as string | undefined;
 
-      btn.deleteContext(session.id);
+      const btnCtx = readResultBtnCtx(session.context);
 
-      if (
-        !msgId ||
-        !cardCtx.resultBody ||
-        !cardCtx.question ||
-        !cardCtx.difficulty ||
-        !cardCtx.category
-      ) {
-        await chat.editMessage({
-          style: MessageStyle.MARKDOWN,
-          message_id_to_edit: msgId ?? '',
-          message: '❌ Could not restore the result — please run `/quiz` again.',
-        });
+      if (!msgId || !btnCtx) {
+        if (msgId) {
+          await chat.editMessage({
+            style: MessageStyle.MARKDOWN,
+            message_id_to_edit: msgId,
+            message: '❌ Could not restore the result — please run `/quiz` again.',
+          });
+        }
         return;
       }
 
-      await renderResultCard(ctx, {
-        msgId,
-        question: cardCtx.question,
-        difficulty: cardCtx.difficulty,
-        category: cardCtx.category,
-        resultBody: cardCtx.resultBody,
+      await chat.editMessage({
+        style: MessageStyle.MARKDOWN,
+        message_id_to_edit: msgId,
+        // Restore the full result card text exactly as it was (slot back pattern)
+        message: btnCtx.resultMessage,
+        // Re-attach both stable button IDs from the stored context
+        ...(hasNativeButtons(native.platform)
+          ? { button: [btnCtx.playAgainId, btnCtx.balanceId] }
+          : {}),
       });
     },
   },
@@ -608,46 +702,84 @@ export const onCommand = async ({
   }, TIMEOUT_MS);
 };
 
-// ── Shared reaction evaluator (FB flow) ───────────────────────────────────────
-async function handleReact(
-  { chat, session, state, event, currencies }: AppCtx,
-  userAnswer: 'True' | 'False',
-): Promise<void> {
-  const ctx = session.context as Partial<ReactQuizContext>;
-  const msgId = ctx.messageID ?? '';
-  const correctAnswer = ctx.answer ?? '';
-  const difficulty = (ctx.difficulty ?? 'medium') as Difficulty;
+// ── Shared reaction evaluator (FB Messenger & FB Page flow) ───────────────────
+async function handleReact(ctx: AppCtx, userAnswer: 'True' | 'False'): Promise<void> {
+  const { chat, session, state, event, currencies } = ctx;
+
+  const reactCtx = session.context as Partial<ReactQuizContext>;
+  const msgId = reactCtx.messageID ?? '';
+  const correctAnswer = reactCtx.answer ?? '';
+  const difficulty = (reactCtx.difficulty ?? 'medium') as Difficulty;
   const reward = REWARD_COINS[difficulty];
 
   pendingAnswers.set(msgId, true);
   state.delete(session.id);
 
+  const senderID = event['senderID'] as string | undefined;
   const isCorrect = userAnswer === correctAnswer;
 
   if (isCorrect) {
-    const senderID = event['senderID'] as string | undefined;
-    let coinBlock = '';
+    // ── Update quiz stats + credit coins ────────────────────────────────────
+    let stats: QuizStats = { wins: 0, losses: 0, totalEarned: 0, questionCount: 0 };
+    let newBalance = 0;
 
     if (senderID) {
-      // Await the credit first — getMoney called after so the balance is accurate
+      stats = await readQuizStats(ctx, senderID);
+      stats.questionCount += 1;
+      stats.wins += 1;
+      stats.totalEarned += reward;
+      // Persist before crediting coins (daily pattern: state durable even if reply fails)
+      await saveQuizStats(ctx, senderID, stats);
+      // increaseMoney must fully resolve before getMoney (transfer/fish pattern)
       await currencies.increaseMoney({ user_id: senderID, money: reward });
-      const newBalance = await currencies.getMoney(senderID);
-      coinBlock = [
+      newBalance = await currencies.getMoney(senderID);
+    }
+
+    const winRate =
+      stats.questionCount > 0
+        ? Math.round((stats.wins / stats.questionCount) * 100)
+        : 0;
+
+    await chat.reply({
+      style: MessageStyle.MARKDOWN,
+      message: [
+        `✅ **Correct!** The answer was **${correctAnswer}**. Well done! 🎉`,
         ``,
         `💰 **+${reward} coins** earned!`,
         `📊 Balance: **${newBalance.toLocaleString()} coins**`,
-      ].join('\n');
-    }
-
-    await chat.reply({
-      style: MessageStyle.MARKDOWN,
-      message: `✅ **Correct!** The answer was **${correctAnswer}**. Well done! 🎉${coinBlock}`,
+        ``,
+        `🏆 Wins: **${stats.wins}** | Losses: **${stats.losses}** | Win Rate: **${winRate}%**`,
+        `💎 Lifetime earned: **${stats.totalEarned.toLocaleString()} coins**`,
+      ].join('\n'),
     });
   } else {
-    await chat.reply({
-      style: MessageStyle.MARKDOWN,
-      message: `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${correctAnswer}**. 😔`,
-    });
+    // ── Update stats for a wrong answer (no coin change) ────────────────────
+    if (senderID) {
+      const stats = await readQuizStats(ctx, senderID);
+      stats.questionCount += 1;
+      stats.losses += 1;
+      await saveQuizStats(ctx, senderID, stats);
+
+      const winRate =
+        stats.questionCount > 0
+          ? Math.round((stats.wins / stats.questionCount) * 100)
+          : 0;
+
+      await chat.reply({
+        style: MessageStyle.MARKDOWN,
+        message: [
+          `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${correctAnswer}**. 😔`,
+          ``,
+          `🏆 Wins: **${stats.wins}** | Losses: **${stats.losses}** | Win Rate: **${winRate}%**`,
+          `💎 Lifetime earned: **${stats.totalEarned.toLocaleString()} coins**`,
+        ].join('\n'),
+      });
+    } else {
+      await chat.reply({
+        style: MessageStyle.MARKDOWN,
+        message: `❌ **Wrong!** You answered **${userAnswer}**, but the correct answer was **${correctAnswer}**. 😔`,
+      });
+    }
   }
 }
 
