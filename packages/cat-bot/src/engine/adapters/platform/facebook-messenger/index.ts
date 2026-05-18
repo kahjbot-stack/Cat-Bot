@@ -229,19 +229,31 @@ export function createFacebookMessengerListener(
                 error: err,
               });
 
-              // Auth errors are unrecoverable — the same appstate will fail again.
-              // Flag the session invalid so the next boot() triggers a fresh login.
+              // Auth errors from MQTT (e.g. account_inactive / not_logged_in) mean the
+              // fca-unofficial session cookie was invalidated server-side. Flag for
+              // re-login then reject with a RETRYABLE error so the platform runner
+              // continues its exponential-backoff loop. The next boot() sees
+              // isInvalidSession=true and calls startBot() for a fresh fca login.
+              // WHY NOT reject(err): the raw auth error causes shouldRetry → isAuthError
+              // to return false, permanently halting the runner — no recovery ever
+              // occurs even though a new fca-unofficial login would succeed.
               if (isAuthError(err)) {
                 sessionLogger.error(
-                  '[facebook-messenger] Session offline — MQTT auth error (appstate may be expired)',
+                  '[facebook-messenger] MQTT auth error — session flagged for re-login on next retry',
                   { error: err },
                 );
                 isInvalidSession = true;
-                persistState();
+                // Null before persistState() so the registry snapshot also carries null,
+                // giving a belt-and-suspenders guarantee that needsLogin evaluates true
+                // on the next boot() even if isInvalidSession were somehow cleared.
+                activeFcaApi = null;
+                persistState(); // saves isInvalidSession=true and activeFcaApi=null
                 void sessionManager.markInactive(smKey);
-                // Auth errors are permanent — connect will never fire for a revoked appstate.
-                // Reject immediately so the runner classifies this as a non-retryable failure.
-                reject(err);
+                reject(
+                  new Error(
+                    '[facebook-messenger] MQTT session inactive — re-login scheduled for next retry',
+                  ),
+                );
                 return;
               }
 
