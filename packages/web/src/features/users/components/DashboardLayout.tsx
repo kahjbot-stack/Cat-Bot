@@ -43,12 +43,10 @@ const navItems: NavItem[] = [
 function NavLink({ item }: { item: NavItem }) {
   const location = useLocation()
 
-  // Distinguish root dashboard route from specific subsections (like Settings)
-  // to prevent multiple nav items from being highlighted simultaneously.
+  // Distinguish root dashboard route from specific subsections to prevent
+  // multiple nav items from being highlighted simultaneously.
   const isRootRoute = item.href === ROUTES.DASHBOARD.ROOT
-  const isSettingsRoute = location.pathname.startsWith(
-    ROUTES.DASHBOARD.SETTINGS,
-  )
+  const isSettingsRoute = location.pathname.startsWith(ROUTES.DASHBOARD.SETTINGS)
 
   const isActive = isRootRoute
     ? location.pathname === item.href ||
@@ -89,9 +87,7 @@ function MobileNavLink({
   const location = useLocation()
 
   const isRootRoute = item.href === ROUTES.DASHBOARD.ROOT
-  const isSettingsRoute = location.pathname.startsWith(
-    ROUTES.DASHBOARD.SETTINGS,
-  )
+  const isSettingsRoute = location.pathname.startsWith(ROUTES.DASHBOARD.SETTINGS)
 
   const isActive = isRootRoute
     ? location.pathname === item.href ||
@@ -156,8 +152,7 @@ function UserMenu() {
   const handleLogout = async () => {
     setOpen(false)
     try {
-      // Invalidates the server-side session token before navigating away — prevents
-      // the old cookie from being replayed if the user navigates back.
+      // Invalidates the server-side session token before navigating away.
       await logout()
     } catch (err) {
       console.error('Logout failed:', err)
@@ -205,7 +200,7 @@ function UserMenu() {
             '[animation:fade-in-down_150ms_var(--easing-standard-decelerate)_both]',
           )}
         >
-          {/* User info row — non-interactive header */}
+          {/* User info row — non-interactive display header */}
           <div className="flex items-center gap-3 px-4 py-3 border-b border-outline-variant">
             <User className="h-4 w-4 shrink-0 text-on-surface-variant" />
             <div className="min-w-0">
@@ -245,16 +240,15 @@ function UserMenu() {
 /**
  * Dashboard shell with a top navbar.
  *
- * Intentionally lightweight — only Bot Manager and Settings are exposed.
- * The navbar uses a sibling-route architecture (see router.tsx) so the
- * public Layout navbar never co-renders on dashboard routes.
+ * Header structure (unified height h-16 with Layout and AdminSidebarLayout):
+ *  - Left:   Cat icon (fixed) + nav links (Bot Manager, Settings)
+ *  - Centre: "Cat-Bot" brand text — absolutely centred in the nav container
+ *  - Right:  Theme toggle + UserMenu (desktop) | hamburger → drawer (mobile)
  *
- * Responsive strategy:
- *  - md+: logo | divider | nav links | spacer | theme toggle | user menu (horizontal)
- *  - <md: logo | spacer | theme toggle | hamburger → animated drawer below header
+ * The theme toggle is the leading item in the right-side navigation button
+ * section, consistent with the landing-page Layout shell.
  *
- * The mobile drawer inlines user info and logout directly rather than nesting
- * the UserMenu dropdown — avoids layered modal complexity on small screens.
+ * Mobile drawer: nav links → separator → user identity → logout → separator → theme toggle
  */
 export default function DashboardLayout() {
   const { theme, setTheme } = useTheme()
@@ -266,11 +260,9 @@ export default function DashboardLayout() {
   const [mobileOpen, setMobileOpen] = useState(false)
   const [prevPath, setPrevPath] = useState(location.pathname)
 
-  // Define display name for mobile drawer and resolve unused 'user' variable
   const displayName = user?.name ?? 'User'
 
   // Collapse the mobile drawer whenever the active route changes.
-  // Done during render to avoid cascading updates from effects.
   if (location.pathname !== prevPath) {
     setPrevPath(location.pathname)
     setMobileOpen(false)
@@ -284,7 +276,7 @@ export default function DashboardLayout() {
     }
     document.addEventListener('keydown', handler)
     return () => document.removeEventListener('keydown', handler)
-  }, [mobileOpen, setMobileOpen])
+  }, [mobileOpen])
 
   // Socket connectivity — ensure the transport is alive while in the dashboard
   // and surface connection loss as a persistent snackbar (duration: 0).
@@ -325,8 +317,7 @@ export default function DashboardLayout() {
     }
   }, [snackbar, setPosition])
 
-  // Logout handler for the mobile drawer — mirrors UserMenu's logout but runs
-  // at DashboardLayout level where we already have user/logout in scope.
+  // Logout handler for the mobile drawer — mirrors UserMenu's logout.
   const handleMobileLogout = async () => {
     setMobileOpen(false)
     try {
@@ -341,39 +332,49 @@ export default function DashboardLayout() {
     <div className="min-h-screen flex flex-col bg-surface-container-high text-on-surface">
       {/* ── Header ── */}
       <header className="sticky top-0 z-sticky bg-surface border-b border-outline-variant backdrop-blur">
-        {/* Main nav bar */}
+        {/* ── Main nav bar — h-16 unified across all three shells ── */}
         <nav
-          className="max-w-7xl mx-auto px-6 h-16 flex items-center gap-10"
+          className="relative max-w-7xl mx-auto px-6 h-16 flex items-center"
           aria-label="Dashboard navigation"
         >
-          {/* Brand */}
-          <UILink
-            as={Link}
-            to={ROUTES.DASHBOARD.ROOT}
-            variant="unstyled"
-            className="flex items-center gap-2 text-title-lg font-semibold text-primary hover:opacity-80 transition-opacity duration-fast shrink-0"
-          >
-            {/* em-relative sizing keeps the icon optically matched to the text cap-height */}
-            <Cat className="h-[1.3em] w-[1.3em]" />
-            Cat-Bot
-          </UILink>
+          {/* ── Left: Cat icon (fixed anchor) + desktop nav links ── */}
+          <div className="flex items-center gap-2 shrink-0">
+            {/* Cat icon — links to dashboard root; icon only so the brand text
+                can float independently to the horizontal centre. */}
+            <UILink
+              as={Link}
+              to={ROUTES.DASHBOARD.ROOT}
+              variant="unstyled"
+              aria-label="Cat-Bot dashboard"
+              className="flex items-center text-primary hover:opacity-80 transition-opacity duration-fast outline-none focus-visible:ring-2 focus-visible:ring-primary/20 rounded-sm"
+            >
+              <Cat className="h-5 w-5" />
+            </UILink>
 
-          {/* ── Desktop: vertical divider + nav links (md+) ── */}
-          {/* Wrapped together so the gap-6 on the nav flex container only adds
-              space when this group is rendered — no phantom gap on mobile. */}
-          <div className="hidden md:flex items-center gap-6">
-            <div className="flex items-center gap-1">
+            {/* Desktop nav links — inline with the icon group, hidden on mobile */}
+            <div className="hidden md:flex items-center gap-1 ml-2">
               {navItems.map((item) => (
                 <NavLink key={item.href} item={item} />
               ))}
             </div>
           </div>
 
-          {/* Push right-side controls to the trailing edge */}
-          <div className="flex-1" />
+          {/* ── Centre: "Cat-Bot" brand text — absolutely centred in the nav ── */}
+          {/* pointer-events-none on wrapper so it never occludes nav links or
+              controls that share the same layer; inner Link restores events. */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
+            <Link
+              to={ROUTES.DASHBOARD.ROOT}
+              className="pointer-events-auto text-title-lg font-semibold text-primary hover:opacity-80 transition-opacity duration-fast outline-none focus-visible:ring-2 focus-visible:ring-primary/20 rounded-sm"
+            >
+              Cat-Bot
+            </Link>
+          </div>
 
-          {/* ── Desktop: theme toggle + user dropdown (md+) ── */}
-          <div className="hidden md:flex items-center gap-2">
+          {/* ── Right: Desktop — theme toggle + user dropdown (md+) ── */}
+          {/* Theme toggle is the leading item in the navigation button section,
+              directly preceding the UserMenu per the unified design system. */}
+          <div className="hidden md:flex items-center gap-2 ml-auto">
             <IconButton
               icon={theme === 'dark' ? <Sun /> : <Moon />}
               aria-label={
@@ -388,20 +389,9 @@ export default function DashboardLayout() {
             <UserMenu />
           </div>
 
-          {/* ── Mobile: theme toggle + hamburger (<md) ── */}
-          {/* Theme toggle stays visible at all breakpoints — it's a primary UX pref */}
-          <div className="flex md:hidden items-center gap-1">
-            <IconButton
-              icon={theme === 'dark' ? <Sun /> : <Moon />}
-              aria-label={
-                theme === 'dark'
-                  ? 'Switch to light mode'
-                  : 'Switch to dark mode'
-              }
-              variant="text"
-              size="md"
-              onClick={() => setTheme(toggleTheme(theme))}
-            />
+          {/* ── Right: Mobile — hamburger only (<md) ── */}
+          {/* Theme toggle lives in the drawer alongside the nav buttons. */}
+          <div className="flex md:hidden items-center ml-auto">
             <IconButton
               icon={mobileOpen ? <X /> : <Menu />}
               aria-label={
@@ -416,8 +406,7 @@ export default function DashboardLayout() {
         </nav>
 
         {/* ── Mobile drawer ── */}
-        {/* Part of the sticky header element so it scrolls with the sticky region
-            and doesn't cover page content as a floating overlay. */}
+        {/* Part of the sticky header element so it scrolls with the sticky region. */}
         {mobileOpen && (
           <div
             role="navigation"
@@ -440,7 +429,7 @@ export default function DashboardLayout() {
               {/* Separator before user section */}
               <div className="my-2 mx-4 border-t border-outline-variant" />
 
-              {/* User identity row — display only; provides context before logout */}
+              {/* User identity row — display context before logout */}
               <div className="flex items-center gap-3 px-4 py-2.5">
                 <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full">
                   <User className="h-4 w-4 text-on-surface-variant" />
@@ -450,7 +439,7 @@ export default function DashboardLayout() {
                 </p>
               </div>
 
-              {/* Logout — destructive action gets error color so intent is clear */}
+              {/* Logout — destructive action gets error colour so intent is clear */}
               <button
                 type="button"
                 onClick={() => {
@@ -465,6 +454,31 @@ export default function DashboardLayout() {
               >
                 <LogOut className="h-4 w-4 shrink-0" />
                 Log out
+              </button>
+
+              {/* Separator before theme toggle */}
+              <div className="my-2 mx-4 border-t border-outline-variant" />
+
+              {/* Theme toggle — lives in the navigation button section on mobile */}
+              <button
+                type="button"
+                onClick={() => {
+                  setTheme(toggleTheme(theme))
+                  setMobileOpen(false)
+                }}
+                className={cn(
+                  'flex items-center gap-3 w-full px-4 py-3 rounded-xl',
+                  'text-body-md font-medium text-left text-on-surface',
+                  'transition-colors duration-fast',
+                  'hover:bg-on-surface/[var(--state-hover-opacity)]',
+                )}
+              >
+                {theme === 'dark' ? (
+                  <Sun className="h-4 w-4 shrink-0 text-on-surface-variant" />
+                ) : (
+                  <Moon className="h-4 w-4 shrink-0 text-on-surface-variant" />
+                )}
+                {theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
               </button>
             </div>
           </div>

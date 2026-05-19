@@ -16,12 +16,13 @@ import { ROUTES } from '@/constants/routes.constants'
  * Kept separate from DashboardLayout so authenticated operators see only
  * the dashboard chrome — no public nav leaks through via nesting.
  *
- * Responsive strategy:
- *  - md+: logo left | theme toggle + auth buttons right (horizontal)
- *  - <md: logo left | theme toggle + hamburger right → animated drawer below header
+ * Header structure (unified with DashboardLayout — both share h-16):
+ *  - Left:   Cat icon logo (fixed, links to home)
+ *  - Centre: "Cat-Bot" text absolutely centred in the nav container
+ *  - Right:  Auth buttons + theme toggle (desktop) | hamburger → drawer (mobile)
  *
- * The mobile drawer is part of the sticky header element so it scrolls with
- * the page's sticky region rather than appearing as a floating overlay.
+ * The theme toggle is co-located with the navigation button section on every
+ * breakpoint: trailing position on desktop, inside the mobile drawer.
  */
 export default function Layout() {
   const { theme, setTheme } = useTheme()
@@ -33,8 +34,7 @@ export default function Layout() {
   const isLogin = location.pathname === '/login'
   const isSignup = location.pathname === '/signup'
 
-  // Collapse the mobile drawer on route change. Done during render
-  // to avoid cascading state updates from effects.
+  // Collapse the mobile drawer on route change (during render to avoid cascading updates).
   if (location.pathname !== prevPath) {
     setPrevPath(location.pathname)
     setMobileOpen(false)
@@ -54,39 +54,39 @@ export default function Layout() {
     <div className="min-h-screen flex flex-col bg-surface text-on-surface">
       {/* ── Header ── */}
       <header className="sticky top-0 z-fixed bg-surface/80 backdrop-blur border-b border-outline-variant">
-        {/* Main nav bar — fixed 64px height, logo left / controls right */}
+        {/* ── Main nav bar — h-16 matches DashboardLayout and AdminSidebarLayout ── */}
         <nav
-          className="max-w-6xl mx-auto px-6 h-16 flex items-center justify-between"
+          className="relative max-w-6xl mx-auto px-6 h-16 flex items-center"
           aria-label="Main navigation"
         >
-          {/* Brand */}
+          {/* ── Left: Cat icon — fixed to the leading edge ── */}
           <UILink
             as={Link}
             to="/"
             variant="unstyled"
-            className="flex items-center gap-2 text-title-lg font-semibold text-primary hover:opacity-80 transition-opacity duration-fast outline-none focus-visible:ring-2 focus-visible:ring-primary/20 rounded-sm"
+            aria-label="Cat-Bot home"
+            className="flex items-center text-primary hover:opacity-80 transition-opacity duration-fast outline-none focus-visible:ring-2 focus-visible:ring-primary/20 rounded-sm shrink-0"
           >
-            {/* Mirrors the DashboardLayout brand — both shells share the same visual identity */}
-            <Cat className="h-[1.3em] w-[1.3em]" />
-            Cat-Bot
+            <Cat className="h-5 w-5" />
           </UILink>
 
-          {/* ── Desktop right-side controls (md+) ── */}
-          <div className="hidden md:flex items-center gap-3">
-            <IconButton
-              icon={theme === 'dark' ? <Sun /> : <Moon />}
-              aria-label={
-                theme === 'dark'
-                  ? 'Switch to light mode'
-                  : 'Switch to dark mode'
-              }
-              variant="text"
-              size="md"
-              onClick={() => setTheme(toggleTheme(theme))}
-            />
+          {/* ── Centre: "Cat-Bot" brand text — absolutely centred within the nav ── */}
+          {/* pointer-events-none on the wrapper so it never blocks clicks on controls
+              sitting at the same z-plane; the inner Link restores pointer events. */}
+          <div className="absolute inset-0 flex items-center justify-center pointer-events-none select-none">
+            <Link
+              to="/"
+              className="pointer-events-auto text-title-lg font-semibold text-primary hover:opacity-80 transition-opacity duration-fast outline-none focus-visible:ring-2 focus-visible:ring-primary/20 rounded-sm"
+            >
+              Cat-Bot
+            </Link>
+          </div>
 
+          {/* ── Right: Desktop controls — auth buttons then theme toggle (md+) ── */}
+          {/* Theme toggle is the trailing item so it anchors the right edge of
+              the navigation button group on every desktop breakpoint. */}
+          <div className="hidden md:flex items-center gap-3 ml-auto">
             {isAuthenticated ? (
-              // Streamline UX: Users with active sessions skip the login flow
               <Button
                 as={Link}
                 to={ROUTES.DASHBOARD.ROOT}
@@ -98,7 +98,7 @@ export default function Layout() {
               </Button>
             ) : (
               <>
-                {/* Outline variant on the active auth link signals "current page" */}
+                {/* Tonal/outline variant on the active auth link signals "current page" */}
                 <Button
                   as={Link}
                   to="/login"
@@ -109,7 +109,7 @@ export default function Layout() {
                   Log in
                 </Button>
 
-                {/* Filled CTA for maximum visual weight on the primary acquisition action */}
+                {/* Filled for maximum visual weight on the primary acquisition CTA */}
                 <Button
                   as={Link}
                   to="/signup"
@@ -121,11 +121,8 @@ export default function Layout() {
                 </Button>
               </>
             )}
-          </div>
 
-          {/* ── Mobile controls: theme toggle + hamburger (<md) ── */}
-          {/* Theme toggle stays visible on mobile so the primary UX preference is never hidden */}
-          <div className="flex md:hidden items-center gap-1">
+            {/* Theme toggle — trailing position in the navigation button section */}
             <IconButton
               icon={theme === 'dark' ? <Sun /> : <Moon />}
               aria-label={
@@ -137,6 +134,12 @@ export default function Layout() {
               size="md"
               onClick={() => setTheme(toggleTheme(theme))}
             />
+          </div>
+
+          {/* ── Right: Mobile — hamburger only (<md) ── */}
+          {/* Theme toggle is inside the mobile drawer so it stays co-located
+              with the navigation buttons on every screen size. */}
+          <div className="flex md:hidden items-center ml-auto">
             <IconButton
               icon={mobileOpen ? <X /> : <Menu />}
               aria-label={
@@ -152,7 +155,7 @@ export default function Layout() {
 
         {/* ── Mobile dropdown drawer ── */}
         {/* Rendered inside <header> so it participates in the sticky region
-            and doesn't overlap page content when scrolled. */}
+            and never floats over page content as the user scrolls. */}
         {mobileOpen && (
           <div
             role="navigation"
@@ -165,7 +168,6 @@ export default function Layout() {
             <div className="max-w-6xl mx-auto px-6 py-4 flex flex-col gap-3">
               {/* Full-width buttons give generous touch targets on narrow viewports */}
               {isAuthenticated ? (
-                // Direct navigation to dashboard for authenticated mobile users
                 <Button
                   as={Link}
                   to={ROUTES.DASHBOARD.ROOT}
@@ -200,6 +202,31 @@ export default function Layout() {
                   </Button>
                 </>
               )}
+
+              {/* Separator before theme toggle — maintains visual rhythm */}
+              <div className="border-t border-outline-variant" />
+
+              {/* Theme toggle — full-width row item inside the navigation section */}
+              <button
+                type="button"
+                onClick={() => {
+                  setTheme(toggleTheme(theme))
+                  setMobileOpen(false)
+                }}
+                className={cn(
+                  'flex items-center gap-3 w-full px-4 py-3 rounded-xl',
+                  'text-body-md font-medium text-left text-on-surface',
+                  'transition-colors duration-fast',
+                  'hover:bg-on-surface/[var(--state-hover-opacity)]',
+                )}
+              >
+                {theme === 'dark' ? (
+                  <Sun className="h-4 w-4 shrink-0 text-on-surface-variant" />
+                ) : (
+                  <Moon className="h-4 w-4 shrink-0 text-on-surface-variant" />
+                )}
+                {theme === 'dark' ? 'Switch to light mode' : 'Switch to dark mode'}
+              </button>
             </div>
           </div>
         )}

@@ -273,9 +273,6 @@ export default function NewBotPage() {
       </Helmet>
 
       <div className="mb-8">
-        <p className="text-[11px] font-semibold uppercase tracking-[0.10em] text-on-surface-variant/60 mb-2 select-none">
-          Cat-Bot Dashboard
-        </p>
         <h1 className="text-[1.5rem] font-bold tracking-tight text-on-surface leading-tight">
           Create New Bot
         </h1>
@@ -552,9 +549,10 @@ function WizardStepper({
                   className={cn(
                     'relative flex h-7 w-7 shrink-0 items-center justify-center rounded-full',
                     'text-[11px] font-bold tracking-tight transition-all duration-300',
+                    'border',
                     isDone || isActive
-                      ? 'bg-primary text-on-primary'
-                      : 'text-on-surface-variant',
+                      ? 'bg-primary text-on-primary border-primary'
+                      : 'bg-surface text-on-surface-variant border-on-surface-variant/30',
                   )}
                   style={
                     isDone || isActive
@@ -562,7 +560,7 @@ function WizardStepper({
                           boxShadow:
                             '0 0 0 3px rgba(138,180,255,0.18), 0 0 12px rgba(138,180,255,0.12)',
                         }
-                      : { border: '1.5px solid rgba(255,255,255,0.16)' }
+                      : undefined
                   }
                 >
                   {isDone ? (
@@ -609,18 +607,16 @@ function WizardStepper({
 
 function ProgressConnector({ filled }: { filled: boolean }) {
   return (
-    <div className="flex-1 mx-3 sm:mx-4 relative h-[2px] rounded-full overflow-hidden">
+    <div className="flex-1 mx-3 sm:mx-4 relative h-[3px] rounded-full overflow-hidden bg-on-surface-variant/20 dark:bg-white/10">
       <div
-        className="absolute inset-0 rounded-full"
-        style={{ background: 'rgba(255,255,255,0.08)' }}
-      />
-      <div
-        className="absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out"
+        className={cn(
+          'absolute inset-y-0 left-0 rounded-full transition-all duration-500 ease-out',
+          filled ? 'w-full' : 'w-0',
+        )}
         style={{
-          width: filled ? '100%' : '0%',
           background:
-            'linear-gradient(90deg, rgba(138,180,255,0.55) 0%, rgba(138,180,255,0.85) 100%)',
-          boxShadow: filled ? '0 0 6px rgba(138,180,255,0.4)' : 'none',
+            'linear-gradient(90deg, rgba(138,180,255,0.55) 0%, rgba(138,180,255,0.95) 100%)',
+          boxShadow: filled ? '0 0 6px rgba(138,180,255,0.35)' : 'none',
         }}
       />
     </div>
