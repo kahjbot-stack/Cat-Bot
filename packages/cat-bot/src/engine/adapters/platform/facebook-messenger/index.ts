@@ -438,10 +438,13 @@ export function createFacebookMessengerListener(
             const native = {
               userId: config.userId,
               sessionId: config.sessionId,
-              platform: Platforms.FacebookMessenger,
-              api: fcaApi,
-              event: rawEvent,
-            };
+            platform: Platforms.FacebookMessenger,
+            api: fcaApi,
+            event: rawEvent,
+            // Carry the confirmed FB account ID so downstream command handlers can
+            // optionally validate event ownership without an extra API call.
+            fbAccountId: activeFbAccountId,
+          };
 
             // Guard routeRawEvent so a malformed payload never throws through fca-unofficial's
             // synchronous callback and silently kills the entire MQTT connection.
@@ -566,6 +569,8 @@ export function createFacebookMessengerListener(
                 api: activeFcaApi,
                 fbClient,
                 event,
+                // Same identity propagation as the MQTT path for diagnostic parity.
+                fbAccountId: activeFbAccountId,
               };
               routeFbClientEvent(event, apiWrapper, native, emitter, prefix);
             } catch (routeErr) {
