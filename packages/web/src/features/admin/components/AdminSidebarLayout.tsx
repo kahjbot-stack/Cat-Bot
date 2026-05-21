@@ -31,7 +31,7 @@ import {
   H_CHEVRON,
   H_DROPDOWN_ITEM,
   H_DROPDOWN_ICON,
-} from '@/components/layout/header.constants'
+} from '@/constants/header.constants'
 
 // ============================================================================
 // Constants

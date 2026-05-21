@@ -15,7 +15,7 @@ import {
   H_LOGO_ICON,
   H_BRAND_TEXT,
   H_NAV_ITEM_MOBILE,
-} from '@/components/layout/header.constants'
+} from '@/constants/header.constants'
 
 /**
  * Public shell — marketing and auth routes (/, /login, /signup, etc.)
