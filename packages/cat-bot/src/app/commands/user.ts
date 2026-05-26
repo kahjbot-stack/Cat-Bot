@@ -57,7 +57,7 @@ import type { CommandConfig } from '@/engine/types/module-config.types.js';
 export const config: CommandConfig = {
   name: 'user',
   aliases: [] as string[],
-  version: '1.1.0',
+  version: '1.2.0',
   role: Role.BOT_ADMIN,
   author: 'John Lester',
   description:
@@ -65,10 +65,12 @@ export const config: CommandConfig = {
   category: 'Bot Admin',
   usage: '<ban|unban|list|search> [uid|page|query]',
   guide: [
-    'ban <uid> [reason]   — Ban a user from this session',
-    'unban <uid>          — Lift an existing user ban',
-    'list [page]          — Paginated list of all users (default page 1)',
-    'search <query|id>    — Search a user by name or exact ID',
+    'ban <uid|@mention|reply> [reason]   — Ban a user from this session',
+    '  @mention supported on Discord & Messenger only',
+    'unban <uid|@mention|reply>          — Lift an existing user ban',
+    '  @mention supported on Discord & Messenger only',
+    'list [page]                         — Paginated list of all users (default page 1)',
+    'search <query|id>                   — Search a user by name or exact ID',
   ],
   cooldown: 5,
   hasPrefix: true,
@@ -93,6 +95,12 @@ export const config: CommandConfig = {
     },
   ],
 };
+
+/** Platforms where @mention resolution is supported */
+const MENTION_SUPPORTED_PLATFORMS = new Set<string>([
+  Platforms.Discord,
+  Platforms.FacebookMessenger,
+]);
 
 /** Users shown per page in list view — matches help.ts density. */
 const USERS_PER_PAGE = 10;
@@ -152,43 +160,78 @@ export const onCommand = async ({
     return;
   }
 
+  // ── Shared target resolution helpers ───────────────────────────────────────
+  const mentions =
+    (event['mentions'] as Record<string, string> | undefined) ?? {};
+  const mentionIDs = Object.keys(mentions);
+  const msgReply = event['messageReply'] as
+    | Record<string, unknown>
+    | null
+    | undefined;
+  const repliedSenderID = msgReply?.['senderID'] as string | undefined;
+  const isMentionPlatform = MENTION_SUPPORTED_PLATFORMS.has(platform);
+
   const sub = args[0]?.toLowerCase();
 
-  // ── /user ban <uid> [reason] ───────────────────────────────────────────────
+  // ── /user ban <uid|@mention|reply> [reason] ────────────────────────────────
   if (sub === 'ban') {
-    const uid = args[1];
+    // Priority: @mention (Discord/Messenger) → replied message → raw uid arg
+    let uid: string | undefined;
+    let reason: string | undefined;
+
+    if (isMentionPlatform && mentionIDs[0]) {
+      uid = mentionIDs[0];
+      // Reason is everything in args after stripping the mention text
+      reason =
+        args
+          .slice(1)
+          .join(' ')
+          .replace(mentions[uid] ?? '', '')
+          .trim() || undefined;
+    } else if (repliedSenderID) {
+      uid = repliedSenderID;
+      reason = args.slice(1).join(' ').trim() || undefined;
+    } else {
+      uid = args[1];
+      reason = args.slice(2).join(' ') || undefined;
+    }
+
     if (!uid) {
       await chat.replyMessage({
-        message: `❌ Usage: ${prefix}user ban <uid> [reason]`,
+        message: `❌ Usage: ${prefix}user ban <uid> [reason]\nYou can also @mention (Discord/Messenger) or reply to the target user.`,
         style: MessageStyle.MARKDOWN,
       });
       return;
     }
-    const reason = args.slice(2).join(' ') || undefined;
+
     await banUser(userId, platform, sessionId, uid, reason);
     const userName = (await user.getName(uid)) || uid;
     const reasonSuffix = reason ? ` — Reason: ${reason}` : '';
     await chat.replyMessage({
-      message: `🚫 **${userName}** has been banned from this session.${reasonSuffix}`,
+      message: `🚫 **${userName}** (\`${uid}\`) has been banned from this session.${reasonSuffix}`,
       style: MessageStyle.MARKDOWN,
     });
     return;
   }
 
-  // ── /user unban <uid> ──────────────────────────────────────────────────────
+  // ── /user unban <uid|@mention|reply> ──────────────────────────────────────
   if (sub === 'unban') {
-    const uid = args[1];
+    // Priority: @mention (Discord/Messenger) → replied message → raw uid arg
+    const uid: string | undefined =
+      (isMentionPlatform && mentionIDs[0]) || repliedSenderID || args[1];
+
     if (!uid) {
       await chat.replyMessage({
-        message: `❌ Usage: ${prefix}user unban <uid>`,
+        message: `❌ Usage: ${prefix}user unban <uid>\nYou can also @mention (Discord/Messenger) or reply to the target user.`,
         style: MessageStyle.MARKDOWN,
       });
       return;
     }
+
     await unbanUser(userId, platform, sessionId, uid);
     const userName = (await user.getName(uid)) || uid;
     await chat.replyMessage({
-      message: `✅ **${userName}** has been unbanned from this session.`,
+      message: `✅ **${userName}** (\`${uid}\`) has been unbanned from this session.`,
       style: MessageStyle.MARKDOWN,
     });
     return;
