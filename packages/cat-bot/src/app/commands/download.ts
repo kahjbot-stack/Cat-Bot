@@ -252,7 +252,7 @@ async function downloadTikTok(rawUrl: string, ctx: AppCtx): Promise<void> {
     if (result.type === 'image') {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
-        message: `📸 **TikTok Photo Slideshow** (${result.download.length} images)\n🔗 ${rawUrl}`,
+        message: `📸 **TikTok Photo Slideshow** (${result.download.length} images)`,
         attachment_url: result.download.map((url, i) => ({
           name: `tiktok-slide-${i + 1}.jpg`,
           url,
@@ -261,7 +261,7 @@ async function downloadTikTok(rawUrl: string, ctx: AppCtx): Promise<void> {
     } else {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
-        message: `🎵 **TikTok Video**\n🔗 ${rawUrl}`,
+        message: `🎵 **TikTok Video**`,
         attachment_url: [{ name: 'tiktok-video.mp4', url: result.download }],
       });
     }
@@ -320,8 +320,7 @@ async function downloadFacebook(rawUrl: string, ctx: AppCtx): Promise<void> {
       message:
         `📥 **Facebook Video**\n\n` +
         `📝 **Title:** ${title}\n` +
-        `🎞 **Quality:** ${quality}\n` +
-        `🔗 ${rawUrl}`,
+        `🎞 **Quality:** ${quality}`,
       attachment_url: [{ name: fileName, url: best.url }],
     });
   } catch (err) {
@@ -363,7 +362,7 @@ async function downloadPinterest(rawUrl: string, ctx: AppCtx): Promise<void> {
 
     await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
-      message: `📌 **Pinterest ${isVideo ? 'Video' : 'Image'}**\n🔗 ${rawUrl}`,
+      message: `📌 **Pinterest ${isVideo ? 'Video' : 'Image'}**`,
       attachment_url: [{ name: fileName, url: mediaUrl as string }],
     });
   } catch (err) {
@@ -413,7 +412,7 @@ async function downloadInstagram(rawUrl: string, ctx: AppCtx): Promise<void> {
 
     await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
-      message: `📱 **Instagram Content**\n🔗 ${rawUrl}`,
+      message: `📱 **Instagram Content**`,
       attachment_url: [{ name: fileName, url: mp4Url }],
     });
   } catch (err) {
@@ -462,7 +461,7 @@ async function downloadYouTube(rawUrl: string, ctx: AppCtx): Promise<void> {
 
     await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
-      message: `🎬 **YouTube Video**\n🔗 ${rawUrl}`,
+      message: `🎬 **YouTube Video**`,
       attachment_url: [{ name: fileName, url: mp4Url }],
     });
   } catch (err) {
