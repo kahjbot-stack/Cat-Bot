@@ -45,7 +45,7 @@ import type { CommandConfig } from '@/engine/types/module-config.types.js';
 
 export const config: CommandConfig = {
   name: 'pair',
-  aliases: ['ship'],
+  aliases: ['ship', 'compatibility'],
   version: '1.2.0',
   role: Role.ANYONE,
   author: 'AjiroDesu',
@@ -53,12 +53,13 @@ export const config: CommandConfig = {
     'Pair two users and reveal their compatibility percentage as an image card.',
   category: 'Fun',
   usage: [
+    'me <- pairs you with a random participant from this group',
     '(reply) <- pairs you with the user you replied to',
     '@mention <- pairs you with the mentioned user',
     '<uid> <- pairs you with a user by their ID',
     '(none) <- randomly picks two participants from this group',
   ],
-  cooldown: 10,
+  cooldown: 60,
   hasPrefix: true,
   platform: [
     Platforms.Discord,
@@ -125,13 +126,41 @@ export const onCommand = async ({
   const repliedSenderID = (messageReply?.['senderID'] as string | undefined) ?? null;
 
   // ── Resolve the two participants ────────────────────────────────────────────
-  // Priority: reply > mention > uid arg > random
+  // Priority: me subcommand > reply > mention > uid arg > random
   let userID1 = senderID;
   let userID2: string | null = null;
   let overrideName2: string | null = null;  // pre-resolved name from mention tag
 
+  // Helper: pick one random participant from the thread excluding the sender.
+  // Shared by both "me" mode and the fully-random fallback mode.
+  const pickRandomPartner = async (): Promise<string | null> => {
+    let participants: string[] = [];
+    try {
+      const info = await thread.getInfo(threadID);
+      participants = info.participantIDs ?? [];
+    } catch {
+      // getInfo can fail on some platforms — proceed with empty list
+    }
+    const candidates = participants.filter((id) => id !== senderID);
+    if (candidates.length === 0) return null;
+    const [picked] = sampleUnique(candidates, 1);
+    return picked ?? null;
+  };
+
+  // 0. "me" subcommand — sender is always one side, random partner is the other
+  if (args[0]?.toLowerCase() === 'me') {
+    const partner = await pickRandomPartner();
+    if (!partner) {
+      await chat.replyMessage({
+        style: MessageStyle.MARKDOWN,
+        message: '❌ No other participants found to pair you with.',
+      });
+      return;
+    }
+    userID2 = partner;
+  }
   // 1. Reply mode — pair sender with the author of the replied-to message
-  if (repliedSenderID) {
+  else if (repliedSenderID) {
     userID2 = repliedSenderID;
   }
   // 2. Mention mode — pair sender with the first @-tagged user
@@ -144,7 +173,7 @@ export const onCommand = async ({
   else if (args[0]) {
     userID2 = args[0].trim();
   }
-  // 4. Random mode — pick two random participants from the thread
+  // 4. Fully random mode — pick two random participants (neither is guaranteed to be sender)
   else {
     let participants: string[] = [];
 
@@ -191,6 +220,7 @@ export const onCommand = async ({
   }
 
   // ── Self-pair guard ─────────────────────────────────────────────────────────
+  // Any other path that accidentally resolves to the same ID is rejected.
   if (userID1 === userID2) {
     await chat.replyMessage({
       style: MessageStyle.MARKDOWN,
