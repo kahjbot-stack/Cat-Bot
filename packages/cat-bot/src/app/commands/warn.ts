@@ -33,6 +33,9 @@ import { Role } from '@/engine/constants/role.constants.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
+import { isBotAdmin } from '@/engine/repos/credentials.repo.js';
+import { isSystemAdmin } from '@/engine/repos/system-admin.repo.js';
 
 // ─── Data shapes ─────────────────────────────────────────────────────────────
 
@@ -73,6 +76,20 @@ export const config: CommandConfig = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'Subcommand: list, listban, info, unban, unwarn, reset, or @tag to warn',
+      required: false,
+    },
+    {
+      type: OptionType.string,
+      name: 'reason',
+      description: 'Reason for warning (used when warning a member)',
+      required: false,
+    },
   ],
 };
 
@@ -136,6 +153,24 @@ async function isThreadAdmin(
   }
 }
 
+/**
+ * Returns true if the sender is a thread admin, bot admin, OR system admin.
+ * Bot admins and system admins inherit all moderation privileges even when
+ * they are not group/thread admins.
+ */
+async function isPrivilegedUser(
+  thread: AppCtx['thread'],
+  native: AppCtx['native'],
+  senderID: string,
+): Promise<boolean> {
+  if (await isSystemAdmin(senderID)) return true;
+  const { userId, platform, sessionId } = native;
+  if (userId && platform && sessionId) {
+    if (await isBotAdmin(userId, platform, sessionId, senderID)) return true;
+  }
+  return isThreadAdmin(thread, senderID);
+}
+
 // ─── Command handler ─────────────────────────────────────────────────────────
 
 export const onCommand = async ({
@@ -147,6 +182,7 @@ export const onCommand = async ({
   user,
   usage,
   prefix,
+  native,
 }: AppCtx): Promise<void> => {
   const threadID = event['threadID'] as string;
   const senderID = event['senderID'] as string;
@@ -250,7 +286,7 @@ export const onCommand = async ({
 
     // ── unban ─────────────────────────────────────────────────────────────────
     case 'unban': {
-      if (!(await isThreadAdmin(thread, senderID))) {
+      if (!(await isPrivilegedUser(thread, native, senderID))) {
         await chat.replyMessage({
           message: '❌ Only group administrators can unban members.',
         });
@@ -295,7 +331,7 @@ export const onCommand = async ({
 
     // ── unwarn ────────────────────────────────────────────────────────────────
     case 'unwarn': {
-      if (!(await isThreadAdmin(thread, senderID))) {
+      if (!(await isPrivilegedUser(thread, native, senderID))) {
         await chat.replyMessage({
           message: '❌ Only group administrators can remove warnings.',
         });
@@ -365,7 +401,7 @@ export const onCommand = async ({
 
     // ── reset ─────────────────────────────────────────────────────────────────
     case 'reset': {
-      if (!(await isThreadAdmin(thread, senderID))) {
+      if (!(await isPrivilegedUser(thread, native, senderID))) {
         await chat.replyMessage({
           message: '❌ Only group administrators can reset warning data.',
         });
@@ -380,7 +416,7 @@ export const onCommand = async ({
 
     // ── default: warn a member ────────────────────────────────────────────────
     default: {
-      if (!(await isThreadAdmin(thread, senderID))) {
+      if (!(await isPrivilegedUser(thread, native, senderID))) {
         await chat.replyMessage({
           message: '❌ Only group administrators can warn members.',
         });

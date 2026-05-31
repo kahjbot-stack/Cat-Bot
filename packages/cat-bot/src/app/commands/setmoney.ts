@@ -24,6 +24,7 @@ import { Role } from '@/engine/constants/role.constants.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 export const config: CommandConfig = {
   name: 'setmoney',
@@ -44,6 +45,20 @@ export const config: CommandConfig = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'me <amount> | del me | del @mention | @mention <amount> | uid <id> <amount>',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'value',
+      description: 'Amount or target user ID (context-dependent)',
+      required: false,
+    },
   ],
 };
 

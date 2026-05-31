@@ -22,6 +22,10 @@ import { Role } from '@/engine/constants/role.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
+import { isBotAdmin } from '@/engine/repos/credentials.repo.js';
+import { isSystemAdmin } from '@/engine/repos/system-admin.repo.js';
+import type { CommandConfig } from '@/engine/types/module-config.types.js';
 
 // ─── State labels ─────────────────────────────────────────────────────────────
 
@@ -60,7 +64,7 @@ interface ButtonRemoveContext extends Record<string, unknown> {
 
 // ─── Config ──────────────────────────────────────────────────────────────────
 
-export const config = {
+export const config: CommandConfig = {
   name: 'rules',
   version: '1.7.0',
   role: Role.ANYONE,
@@ -82,6 +86,20 @@ export const config = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'Subcommand or rule number: add, edit, move, delete, remove, or <n>',
+      required: false,
+    },
+    {
+      type: OptionType.string,
+      name: 'value',
+      description: 'Rule text, rule number, or user (context-dependent)',
+      required: false,
+    },
   ],
 };
 
@@ -134,6 +152,22 @@ async function isThreadAdmin(
   } catch {
     return false;
   }
+}
+
+/**
+ * Returns true if the sender is a thread admin, bot admin, OR system admin.
+ */
+async function isPrivilegedUser(
+  thread: AppCtx['thread'],
+  native: AppCtx['native'],
+  senderID: string,
+): Promise<boolean> {
+  if (await isSystemAdmin(senderID)) return true;
+  const { userId, platform, sessionId } = native;
+  if (userId && platform && sessionId) {
+    if (await isBotAdmin(userId, platform, sessionId, senderID)) return true;
+  }
+  return isThreadAdmin(thread, senderID);
 }
 
 // ─── Button definitions (Discord & Telegram: remove confirmation) ─────────────
@@ -241,7 +275,7 @@ export const onCommand = async ({
 
   // ── add / -a ───────────────────────────────────────────────────────────────
   if (['add', '-a'].includes(type)) {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({ message: '❌ Only admins can add rules.' });
       return;
     }
@@ -259,7 +293,7 @@ export const onCommand = async ({
 
   // ── edit / -e ──────────────────────────────────────────────────────────────
   if (['edit', '-e'].includes(type)) {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({ message: '❌ Only admins can edit rules.' });
       return;
     }
@@ -295,7 +329,7 @@ export const onCommand = async ({
 
   // ── move / -m ──────────────────────────────────────────────────────────────
   if (['move', '-m'].includes(type)) {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({ message: '❌ Only admins can reorder rules.' });
       return;
     }
@@ -336,7 +370,7 @@ export const onCommand = async ({
 
   // ── delete / del / -d ──────────────────────────────────────────────────────
   if (['delete', 'del', '-d'].includes(type)) {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({ message: '❌ Only admins can delete rules.' });
       return;
     }
@@ -365,7 +399,7 @@ export const onCommand = async ({
 
   // ── remove / reset / -r / -rm ─────────────────────────────────────────────
   if (['remove', 'reset', '-r', '-rm'].includes(type)) {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({
         message: '❌ Only admins can remove all group rules.',
       });

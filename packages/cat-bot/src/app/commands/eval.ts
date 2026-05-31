@@ -31,6 +31,8 @@
 import type { AppCtx } from '@/engine/types/controller.types.js';
 import { Role } from '@/engine/constants/role.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
+import { Platforms } from '@/engine/modules/platform/platform.constants.js';
+
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -54,6 +56,11 @@ export const config = {
   usage: ['<code>'] as string[],
   cooldown: 0,
   hasPrefix: true,
+  platform: [
+    Platforms.Discord,
+    Platforms.Telegram,
+    Platforms.FacebookMessenger,
+  ],
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

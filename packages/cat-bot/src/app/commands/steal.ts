@@ -27,6 +27,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,20 @@ export const config: CommandConfig = {
   usage: '@user <amount>',
   cooldown: 10,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.user,
+      name: 'target',
+      description: '@mention or reply to the user to steal from',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'amount',
+      description: 'Amount to steal (e.g. 100, 1k, all)',
+      required: true,
+    },
+  ],
 };
 
 // ── Database Collection Helpers ───────────────────────────────────────────────

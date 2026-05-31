@@ -16,6 +16,7 @@ import { Role } from '@/engine/constants/role.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { createUrl } from '@/engine/utils/api.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 // ── Command Config ────────────────────────────────────────────────────────────
 
@@ -30,6 +31,14 @@ export const config: CommandConfig = {
   usage: '<username>',
   cooldown: 5,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'username',
+      description: 'GitHub username to look up',
+      required: true,
+    },
+  ],
 };
 
 // ── Command Handler ───────────────────────────────────────────────────────────

@@ -40,8 +40,12 @@ import { Role } from '@/engine/constants/role.constants.js';
 import { kickRegistry } from '@/engine/lib/kick-registry.lib.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
+import { isBotAdmin } from '@/engine/repos/credentials.repo.js';
+import { isSystemAdmin } from '@/engine/repos/system-admin.repo.js';
+import type { CommandConfig } from '@/engine/types/module-config.types.js';
 
-export const config = {
+export const config: CommandConfig = {
   name: 'badwords',
   aliases: ['badword'] as string[],
   version: '1.4.0',
@@ -63,6 +67,20 @@ export const config = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'Subcommand: add, delete, list, on, off, unwarn',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'value',
+      description: 'Word(s) or user to act on (context-dependent)',
+      required: false,
+    },
   ],
 };
 
@@ -91,6 +109,24 @@ async function isThreadAdmin(
   } catch {
     return false;
   }
+}
+
+/**
+ * Returns true if the sender is a thread admin, bot admin, OR system admin.
+ * This is the preferred gate for moderation subcommands — it grants full access
+ * to privileged bot/system roles without requiring them to be group admins.
+ */
+async function isPrivilegedUser(
+  thread: AppCtx['thread'],
+  native: AppCtx['native'],
+  senderID: string,
+): Promise<boolean> {
+  if (await isSystemAdmin(senderID)) return true;
+  const { userId, platform, sessionId } = native;
+  if (userId && platform && sessionId) {
+    if (await isBotAdmin(userId, platform, sessionId, senderID)) return true;
+  }
+  return isThreadAdmin(thread, senderID);
 }
 
 // ── DB helpers ────────────────────────────────────────────────────────────────
@@ -123,6 +159,7 @@ export const onCommand = async ({
   args,
   db,
   usage,
+  native,
 }: AppCtx): Promise<void> => {
   const threadID = event['threadID'] as string;
   const senderID = event['senderID'] as string;
@@ -141,7 +178,7 @@ export const onCommand = async ({
 
   // ── add ────────────────────────────────────────────────────────────────────
   if (sub === 'add') {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
         message: '⚠️ Only admins can add banned words to the list.',
@@ -202,7 +239,7 @@ export const onCommand = async ({
 
   // ── delete / del / -d ─────────────────────────────────────────────────────
   if (['delete', 'del', '-d'].includes(sub ?? '')) {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
         message: '⚠️ Only admins can delete banned words from the list.',
@@ -282,7 +319,7 @@ export const onCommand = async ({
 
   // ── on ────────────────────────────────────────────────────────────────────
   if (sub === 'on') {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
         message: '⚠️ Only admins can enable this feature.',
@@ -299,7 +336,7 @@ export const onCommand = async ({
 
   // ── off ───────────────────────────────────────────────────────────────────
   if (sub === 'off') {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
         message: '⚠️ Only admins can disable this feature.',
@@ -316,7 +353,7 @@ export const onCommand = async ({
 
   // ── unwarn ────────────────────────────────────────────────────────────────
   if (sub === 'unwarn') {
-    if (!(await isThreadAdmin(thread, senderID))) {
+    if (!(await isPrivilegedUser(thread, native, senderID))) {
       await chat.replyMessage({
         style: MessageStyle.MARKDOWN,
         message: '⚠️ Only admins can remove banned-words warnings.',
@@ -385,6 +422,7 @@ export const onChat = async ({
   thread,
   event,
   db,
+  native,
 }: AppCtx): Promise<void> => {
   const message = event['message'] as string | undefined;
   const threadID = event['threadID'] as string;
@@ -392,8 +430,8 @@ export const onChat = async ({
 
   if (!message) return;
 
-  // Skip messages from thread admins — admins should not be kicked by their own filter
-  if (await isThreadAdmin(thread, senderID)) return;
+  // Skip messages from thread admins, bot admins, or system admins
+  if (await isPrivilegedUser(thread, native, senderID)) return;
 
   // Read thread collection — lazy-init not needed here since we bail if not exist
   const coll = db.threads.collection(threadID);

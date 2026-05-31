@@ -16,10 +16,12 @@
 
 import type { AppCtx } from '@/engine/types/controller.types.js';
 import { Role } from '@/engine/constants/role.constants.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
+import type { CommandConfig } from '@/engine/types/module-config.types.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 
-export const config = {
+export const config: CommandConfig = {
   name: 'ignoreonlyad',
   aliases: ['ignoreadonly', 'ignoreonlyadmin', 'ignoreadminonly'] as string[],
   version: '1.2.0',
@@ -39,6 +41,20 @@ export const config = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'add, del, or list',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'command',
+      description: 'Command name to add or remove from the session ignore list',
+      required: false,
+    },
   ],
 };
 

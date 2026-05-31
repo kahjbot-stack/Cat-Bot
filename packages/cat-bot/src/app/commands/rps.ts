@@ -60,6 +60,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 export const config: CommandConfig = {
   name: 'rps',
@@ -73,6 +74,14 @@ export const config: CommandConfig = {
   usage: '[bet amount]',
   cooldown: 3,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'bet',
+      description: 'Amount to bet (optional, e.g. 100, 1k, all)',
+      required: false,
+    },
+  ],
 };
 
 // ── Constants ─────────────────────────────────────────────────────────────────

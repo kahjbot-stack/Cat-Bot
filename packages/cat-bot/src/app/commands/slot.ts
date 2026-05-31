@@ -18,6 +18,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -40,6 +41,14 @@ export const config: CommandConfig = {
   usage: '<bet>',
   cooldown: 5,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'bet',
+      description: 'Amount to bet (e.g. 100, 1k, all)',
+      required: true,
+    },
+  ],
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

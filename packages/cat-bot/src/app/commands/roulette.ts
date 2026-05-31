@@ -21,6 +21,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,26 @@ export const config: CommandConfig = {
   usage: '<bet> <red | black | green> [0-36]',
   cooldown: 5,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'bet',
+      description: 'Amount to bet (e.g. 100, 1k, all)',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'color',
+      description: 'red, black, or green',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'number',
+      description: 'Specific number to bet on (0-36, optional)',
+      required: false,
+    },
+  ],
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

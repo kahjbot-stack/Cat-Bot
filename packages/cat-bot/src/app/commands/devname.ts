@@ -7,6 +7,7 @@ import type { AppCtx } from '@/engine/types/controller.types.js';
 import { Role } from '@/engine/constants/role.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 export const config: CommandConfig = {
   name: 'devname',
@@ -19,6 +20,20 @@ export const config: CommandConfig = {
   usage: '[name] [style]',
   cooldown: 3,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'name',
+      description: 'Name to style',
+      required: false,
+    },
+    {
+      type: OptionType.string,
+      name: 'style',
+      description: 'Style to apply',
+      required: false,
+    },
+  ],
 };
 
 // ── Data ──────────────────────────────────────────────────────────────────────

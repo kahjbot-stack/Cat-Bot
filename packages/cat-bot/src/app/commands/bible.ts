@@ -11,6 +11,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 const API = {
   BIBLE: 'https://bible-api.com',
@@ -30,6 +31,20 @@ export const config: CommandConfig = {
   usage: '[passage] [--version=<ver>]',
   cooldown: 3,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'passage',
+      description: 'Bible passage (e.g. John 3:16) or search text',
+      required: false,
+    },
+    {
+      type: OptionType.string,
+      name: 'version',
+      description: 'Bible version code (e.g. kjv, niv) — use --version or -v flag',
+      required: false,
+    },
+  ],
 };
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -4,6 +4,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { ButtonStyle } from '@/engine/constants/button-style.constants.js';
 import { hasNativeButtons } from '@/engine/utils/ui-capabilities.util.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 const TAX_RATE = 0.05;
 const r2 = (n: number) => Math.round(n * 100) / 100;
@@ -20,6 +21,20 @@ export const config: CommandConfig = {
   usage: '<deposit | withdraw> <amount>',
   cooldown: 5,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'deposit or withdraw',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'amount',
+      description: 'Amount to deposit or withdraw (e.g. 100, 1k, all)',
+      required: true,
+    },
+  ],
 };
 
 async function getBankBalance(db: AppCtx['db'], uid: string): Promise<number> {

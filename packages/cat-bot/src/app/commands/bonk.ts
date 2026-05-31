@@ -16,6 +16,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { createUrl } from '@/engine/utils/api.util.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 // ── Command Config ────────────────────────────────────────────────────────────
 
@@ -37,6 +38,14 @@ export const config: CommandConfig = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.user,
+      name: 'target',
+      description: '@mention or userId to bonk (or reply to a message)',
+      required: false,
+    },
   ],
 };
 

@@ -13,10 +13,12 @@
 
 import type { AppCtx } from '@/engine/types/controller.types.js';
 import { Role } from '@/engine/constants/role.constants.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
+import type { CommandConfig } from '@/engine/types/module-config.types.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 
-export const config = {
+export const config: CommandConfig = {
   name: 'onlyadminbox',
   aliases: ['onlyadbox', 'adboxonly', 'adminboxonly'] as string[],
   version: '1.3.0',
@@ -35,6 +37,20 @@ export const config = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'toggle',
+      description: 'on or off — enable/disable admin-only mode for this thread',
+      required: false,
+    },
+    {
+      type: OptionType.string,
+      name: 'noti',
+      description: 'noti on | noti off — toggle blocked-user notification',
+      required: false,
+    },
   ],
 };
 

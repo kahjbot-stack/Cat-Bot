@@ -42,6 +42,7 @@ import { MessageStyle } from '@/engine/constants/message-style.constants.js';
 import { Platforms } from '@/engine/modules/platform/platform.constants.js';
 import { listBotAdmins } from '@/engine/repos/credentials.repo.js';
 import type { CommandConfig } from '@/engine/types/module-config.types.js';
+import { OptionType } from '@/engine/modules/command/command-option.constants.js';
 
 export const config: CommandConfig = {
   name: 'detect',
@@ -65,6 +66,20 @@ export const config: CommandConfig = {
     Platforms.Discord,
     Platforms.Telegram,
     Platforms.FacebookMessenger,
+  ],
+  options: [
+    {
+      type: OptionType.string,
+      name: 'action',
+      description: 'Subcommand: add, delete, list, on, off',
+      required: true,
+    },
+    {
+      type: OptionType.string,
+      name: 'value',
+      description: "Word(s) to add/delete (comma-separated) or 'hide' for list",
+      required: false,
+    },
   ],
 };
 

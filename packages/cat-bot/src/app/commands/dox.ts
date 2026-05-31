@@ -2,6 +2,7 @@ import type { AppCtx } from '@/engine/types/controller.types.js'
 import { Role } from '@/engine/constants/role.constants.js'
 import { MessageStyle } from '@/engine/constants/message-style.constants.js'
 import type { CommandConfig } from '@/engine/types/module-config.types.js'
+import { OptionType } from '@/engine/modules/command/command-option.constants.js'
 
 export const config: CommandConfig = {
   name: 'dox',
@@ -13,6 +14,14 @@ export const config: CommandConfig = {
   usage: '[userID | @mention | (reply to a message)]',
   cooldown: 10,
   hasPrefix: true,
+  options: [
+    {
+      type: OptionType.string,
+      name: 'target',
+      description: '@mention, userID, or reply to look up',
+      required: false,
+    },
+  ],
 }
 
 /**
