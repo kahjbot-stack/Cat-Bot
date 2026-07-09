@@ -242,6 +242,8 @@ export function createUnifiedPlatformListener(
       sessionManager.register(smKey, {
         start: () => l.start(),
         stop: stopFn,
+        // Cascades sessionManager.unregister() into appstateManager.destroySession()
+        destroy: () => l.destroy(),
       });
       void sessionManager.start(smKey).catch((err) =>
         sessionLogger.error(`[facebook-messenger] Fatal startup error:`, {
@@ -323,6 +325,8 @@ export async function spawnDynamicSession(
   let startFn: () => Promise<void>;
   let stopFn: (signal?: string) => Promise<void>;
   let sessionLogger: SessionLogger;
+  // Only Facebook Messenger owns evictable child state (appstate entry + two listeners).
+  let destroyFn: (() => Promise<void>) | undefined;
 
   if (platform === Platforms.Discord) {
     const l = createDiscordListener(sessionConfig as DiscordConfig);
@@ -369,6 +373,9 @@ export async function spawnDynamicSession(
       await sessionManager.markInactive(smKey);
       await l.stop(signal);
     };
+    // Hard teardown path — evicts the appstate entry so the next spawnDynamicSession
+    // closure starts from zero state instead of inheriting this account's FcaApi.
+    destroyFn = () => l.destroy();
   } else if (platform === Platforms.FacebookPage) {
     const l = createFacebookPageListener(sessionConfig as FbPageConfig);
     listener = l;
@@ -398,6 +405,8 @@ export async function spawnDynamicSession(
   sessionManager.register(smKey, {
     start: startFn,
     stop: stopFn,
+    // exactOptionalPropertyTypes forbids assigning `undefined` to an optional member.
+    ...(destroyFn ? { destroy: destroyFn } : {}),
   });
 
   // 4. Boot the session transport (retry loop runs inside the listener)
