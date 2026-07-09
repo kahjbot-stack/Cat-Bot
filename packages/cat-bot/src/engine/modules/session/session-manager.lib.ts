@@ -13,6 +13,12 @@ import { botRepo } from '@/server/repos/bot.repo.js';
 export interface SessionLifecycle {
   start: () => Promise<void>;
   stop: (signal?: string) => Promise<void>;
+  /**
+   * Optional hard teardown. stop() closes transports; destroy() additionally evicts the
+   * adapter's owned child state (e.g. the FB Messenger appstate entry, its FcaApi, and
+   * both listener slots) so a rebuilt closure can never inherit a live handle.
+   */
+  destroy?: () => Promise<void>;
 }
 
 class SessionManager extends EventEmitter {
@@ -244,7 +250,18 @@ class SessionManager extends EventEmitter {
    * Removes a session from the registry. Useful when credentials change and the closure must be rebuilt.
    */
   async unregister(key: string): Promise<void> {
+    const session = this.#sessions.get(key);
     this.#sessions.delete(key);
+    // Cascade down the ownership tree: sessionManager → appstateManager → mqtt/e2ee.
+    // Without this, deleting the Map entry orphans a live FcaApi that fca-cat-bot's
+    // module-level MQTT state can still resurrect onto the next session's connection.
+    if (session?.destroy) {
+      try {
+        await session.destroy();
+      } catch (err) {
+        console.error(`[session-manager] destroy() failed for ${key}:`, err);
+      }
+    }
     if (this.#active.has(key)) await this.markInactive(key);
   }
 
@@ -282,8 +299,9 @@ class SessionManager extends EventEmitter {
     const promises: Promise<void>[] = [];
     for (const key of [...this.#sessions.keys()]) {
       if (key.startsWith(`${userId}:`)) {
-        this.#sessions.delete(key);
-        if (this.#active.has(key)) promises.push(this.markInactive(key));
+        // Routed through unregister() so destroy() fires — a bare Map.delete() would
+        // leave the banned account's appstate entry and both listeners alive in memory.
+        promises.push(this.unregister(key));
       }
     }
     await Promise.all(promises);
