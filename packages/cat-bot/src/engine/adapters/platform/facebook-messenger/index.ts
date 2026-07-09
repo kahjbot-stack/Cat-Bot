@@ -1,54 +1,47 @@
 /**
- * Facebook Messenger Platform Entry Point (fca-unofficial) — Multi-Session Edition
+ * Facebook Messenger Platform Entry Point — Appstate-Manager Edition
  *
- * Thin orchestration layer — delegates to focused sub-modules:
- *   - types.ts        → shared type definitions (FcaApi, emitter shape)
- *   - login.ts        → authentication and appstate management
- *   - event-router.ts → fca event type → unified emitter event mapping
- *   - wrapper.ts      → UnifiedApi implementation (delegates to lib/)
+ * ── Ownership tree ────────────────────────────────────────────────────────────
+ *   sessionManager        root    key `${userId}:${platform}:${sessionId}`
+ *     └── appstateManager parent  key `${userId}:${sessionId}`
+ *           ├── child 'mqtt'      exactly one fca listenMqtt handle
+ *           └── child 'e2ee'      exactly one FBClient (Signal/Noise) instance
  *
- * Retry architecture (unified — replaces previous two-loop design):
- *   One managed retry loop via platform-runner.lib.ts handles BOTH startup failures
- *   AND runtime MQTT reconnects.
+ * Every lifecycle signal enters at sessionManager, is forwarded by this listener to
+ * appstateManager, and cascades to the two children. THIS FILE CACHES NO STATE:
+ * no activeFcaApi, no listener handle, no fbClient, no module-level registry. A
+ * re-created closure (spawnDynamicSession slow path) therefore cannot resurrect a
+ * dead transport — which was the mechanism behind three sessions merging into one
+ * Facebook account.
  *
- *   WHY the previous design was dangerous:
- *     An inner withRetry loop lived inside the MQTT listenMqtt callback. When MQTT
- *     dropped, that inner loop ran concurrently with the outer startup loop — two
- *     parallel calls to startBot() + listen() on the same session, racing to produce
- *     a live connection. This is undefined behavior: zombie MQTT listeners accumulate,
- *     each receiving a duplicate copy of every event.
+ * ── Concurrency ───────────────────────────────────────────────────────────────
+ *   1. appstateManager.withLock  — boot / detach / E2EE-reconnect are serialised per account.
+ *   2. Child token fencing       — a callback whose token is stale returns immediately.
+ *   3. claimChild()              — synchronous CAS: an error burst yields one restart.
+ *   4. boot() calls stopChildren() first — the "one handle per child key" invariant
+ *      survives an aborted retry, a mid-boot stop, and a credential rotation.
  *
- *   NEW design — single path:
- *     When the MQTT listener emits a recoverable error after a successful boot, the
- *     handler stops the stale MQTT connection and calls emitter.start(). The runner's
- *     isLocked / isRetrying guards guarantee exactly one retry loop runs per session
- *     key at any moment — no nested loop, no race.
- *
- * Smart restart (isInvalidSession):
- *   Avoids unnecessary re-login when the appstate cookie is still valid.
- *   Full re-login is triggered when: auth error flagged, appstate rotated via dashboard,
- *   or no FcaApi exists yet (first boot). All other restarts reattach the MQTT listener.
- *
- * Emitted events (all payloads: { api: UnifiedApi, event: UnifiedEvent, native }):
+ * ── Unified emitter contract (unchanged) ──────────────────────────────────────
  *   'message', 'message_reply', 'message_reaction', 'message_unsend', 'event'
+ *   Payload: { api: UnifiedApi, event: UnifiedEvent, native, prefix }
  */
 
 import { EventEmitter } from 'events';
 
-import type { FacebookMessengerEmitter } from './types.js';
-import type { FcaApi } from './types.js';
+import type { FacebookMessengerEmitter, FcaApi } from './types.js';
 export type { StartBotConfig, StartBotResult } from './types.js';
 
+import type { UnifiedApi } from '@/engine/adapters/models/api.model.js';
 import { createLogger } from '@/engine/modules/logger/logger.lib.js';
-import { startBot } from './login.js';
+import type { SessionLogger } from '@/engine/modules/logger/logger.lib.js';
+import { startBot, unbindFcaLoggerBridge } from './login.js';
 import { routeRawEvent, routeFbClientEvent } from './event-router.js';
-// isAuthError: still needed here to classify MQTT callback errors as permanent vs recoverable.
-// withRetry: removed — runner (platform-runner.lib.ts) now owns all retry loops.
+// isAuthError classifies MQTT callback errors as permanent vs recoverable.
+// withRetry is absent by design — platform-runner.lib.ts owns every retry loop.
 import { isAuthError } from '@/engine/lib/retry.lib.js';
 import { sessionManager } from '@/engine/modules/session/session-manager.lib.js';
-// Centralized retry runner — replaces the inline withRetry boilerplate AND the nested
-// inner withRetry loop that previously lived inside the MQTT listenMqtt callback.
 import { runManagedSession } from '@/engine/lib/platform-runner.lib.js';
+import { appstateManager } from './appstate-manager.lib.js';
 
 import {
   PLATFORM_TO_ID,
@@ -56,9 +49,8 @@ import {
 } from '@/engine/modules/platform/platform.constants.js';
 import { botRepo } from '@/server/repos/bot.repo.js';
 import { env } from '@/engine/config/env.config.js';
-type FBClient = any;
 
-// Re-export startBot so integration tests can construct FacebookApi directly.
+// Re-export startBot so integration tests and the validation controller can log in directly.
 export { startBot };
 
 // ── Listener config ────────────────────────────────────────────────────────────
@@ -71,68 +63,60 @@ export interface FbMessengerListenerConfig {
   sessionId: string;
 }
 
-// ── Module-level session state registry ───────────────────────────────────────
+// ── FME (E2EE) logger bridge — keyed, same rationale as the fca bridge in login.ts ──
 
-/**
- * Persists fca-unofficial session state across listener closure recreations.
- *
- * WHY: The slow-path restart (spawnDynamicSession → new closure) produces a brand-new
- * closure where activeFcaApi would always be null, forcing an unnecessary startBot()
- * re-login on every dashboard restart — burning 2 round-trips and risking Meta account
- * suspension even when the session cookie is perfectly valid.
- */
-interface FbMessengerSessionState {
-  activeFcaApi: FcaApi | null;
-  activeAppstate: string | null;
-  isInvalidSession: boolean;
-  // Stable Facebook numeric user ID (the c_user cookie value) — anchors this state
-  // entry to a specific FB account so a reused (userId, sessionId) pair with a
-  // different appstate never inherits the FcaApi handle of the previous account.
-  fbAccountId: string | null;
+const fmeBridges = new Map<string, () => void>();
+
+function unbindFmeLogger(key: string): void {
+  const detach = fmeBridges.get(key);
+  if (!detach) return;
+  fmeBridges.delete(key);
+  detach();
 }
 
 /**
- * Extracts the Facebook numeric user ID (c_user cookie) from a JSON-serialised
- * fca-unofficial appstate. Returns null when malformed or the cookie is absent.
- *
- * WHY c_user: it is the stable, unique identity for a Facebook account — it never
- * changes across session refreshes (unlike xs, datr, etc.). Including it in the
- * state registry key ensures that swapping appstates (different c_user) on the same
- * system (userId, sessionId) produces a fresh registry entry rather than reusing
- * the API handle from the previous account, preventing cross-account state bleed.
+ * Binds FME structured log output to the session logger, replacing any previous binding
+ * for this key. Without the replace, every E2EE reconnect stacks another four handlers
+ * on what may be a process-wide emitter — leaking listeners and cross-posting one
+ * account's E2EE output into every other session's dashboard console.
  */
-function extractFbAccountId(appstateJson: string): string | null {
-  try {
-    const cookies = JSON.parse(appstateJson) as Array<{
-      key: string;
-      value: string;
-    }>;
-    return cookies.find((c) => c.key === 'c_user')?.value ?? null;
-  } catch {
-    return null;
-  }
+function bindFmeLogger(
+  key: string,
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  fmeInstance: (opts: { emitLogger: boolean }) => any,
+  sessionLogger: SessionLogger,
+): void {
+  unbindFmeLogger(key);
+  const { fmeLogger } = fmeInstance({ emitLogger: true }) as {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fmeLogger: any;
+  };
+
+  const handlers: Array<[string, (l: { message: string }) => void]> = [
+    ['info', (l) => sessionLogger.info(`[facebook-messenger] [fme] ${l.message}`)],
+    ['warn', (l) => sessionLogger.warn(`[facebook-messenger] [fme] ${l.message}`)],
+    ['error', (l) => sessionLogger.error(`[facebook-messenger] [fme] ${l.message}`)],
+  ];
+  for (const [event, fn] of handlers) fmeLogger.on(event, fn);
+
+  fmeBridges.set(key, () => {
+    for (const [event, fn] of handlers) {
+      const detach = fmeLogger.off ?? fmeLogger.removeListener;
+      detach?.call(fmeLogger, event, fn);
+    }
+  });
 }
-
-const sessionStateRegistry = new Map<string, FbMessengerSessionState>();
-
-// ── E2EE Device Store Memory Cache ─────────────────────────────────────────────
-// Protects long-lived Signal identity/keys across temporary connectivity losses.
-// Maps sessionId -> JSON device payload.
-const e2eeDeviceStoreMap = new Map<string, string>();
 
 // ── Platform Listener ──────────────────────────────────────────────────────────
 
 /**
  * Creates a Facebook Messenger platform listener for one account session.
- * Call .start() to log in via fca-unofficial and begin emitting events.
+ * Call .start() to boot, .stop() for a soft detach, .destroy() for a hard eviction.
  */
 export function createFacebookMessengerListener(
   config: FbMessengerListenerConfig,
 ): FacebookMessengerEmitter {
   const emitter = new EventEmitter() as FacebookMessengerEmitter;
-
-  let listenerInstances: { stopListeningAsync: () => Promise<void> } | null =
-    null;
 
   const sessionLogger = createLogger({
     userId: config.userId,
@@ -140,463 +124,358 @@ export function createFacebookMessengerListener(
     sessionId: config.sessionId,
   });
 
-  // Hoisted to factory scope — constant for the listener's lifetime.
+  // Root key (sessionManager) and parent key (appstateManager) — constant for the closure.
   const smKey = `${config.userId}:${Platforms.FacebookMessenger}:${config.sessionId}`;
-  // Parse the stable FB account identity from the initial appstate so the registry key
-  // is anchored to the actual Facebook account, not only the system session handle.
-  // When credentials are swapped via the dashboard (different c_user in the new
-  // appstate), the key changes — the new closure never inherits stale FcaApi state.
-  const initialFbAccountId = extractFbAccountId(config.appstate) ?? '';
-  // Registry key — includes the FB account identity (c_user) as a discriminator so the
-  // same (userId, sessionId) pair with a different appstate always starts fresh.
-  const stateKey = `${config.userId}:${config.sessionId}:${initialFbAccountId}`;
+  const asKey = appstateManager.buildKey(config.userId, config.sessionId);
 
-  // Reuse existing session state when the closure is recreated (slow-path restart).
-  const existingState = sessionStateRegistry.get(stateKey);
-  let activeFcaApi: FcaApi | null = existingState?.activeFcaApi ?? null;
-  let activeAppstate: string | null = existingState?.activeAppstate ?? null;
-  let isInvalidSession: boolean = existingState?.isInvalidSession ?? false;
-  // Confirmed FB user ID post-login; validated after startBot() to detect library-level
-  // account contamination. Seeds from the initial c_user parse for early validation.
-  let activeFbAccountId: string | null =
-    existingState?.fbAccountId ?? (initialFbAccountId || null);
-  // Hoisted to factory scope so emitter.stop() can call fbClient.disconnect() — declaring
-  // inside boot() would make it inaccessible from the stop closure (different stack frame).
-  let fbClient: any = null;
-  // Guards the E2EE onEvent reconnect handler: set to true during emitter.stop() so that
-  // the disconnect callbacks fired by fbClient.disconnect() never trigger a reconnect loop.
-  let isStopping = false;
+  // The only two values this closure retains. Neither is transport state: apiFactory is a
+  // pure function from wrapper.js, activePrefix is a plain string re-read from the DB on boot.
+  let apiFactory:
+    | ((fcaApi: FcaApi, sessionId: string, userId: string) => UnifiedApi)
+    | null = null;
+  let activePrefix = config.prefix;
 
-  /** Writes current closure state back to the registry so future closures inherit it. */
-  function persistState(): void {
-    sessionStateRegistry.set(stateKey, {
-      activeFcaApi,
-      activeAppstate,
-      isInvalidSession,
-      fbAccountId: activeFbAccountId,
-    });
-  }
+  // ── MQTT child ───────────────────────────────────────────────────────────────
 
-  emitter.start = async (): Promise<void> => {
-    /**
-     * Tears down the MQTT listener between retry attempts.
-     * Called by runManagedSession before each non-first attempt — never directly.
-     * activeFcaApi is intentionally preserved so boot() can reattach without re-login
-     * when the appstate cookie is still valid.
-     */
-    const cleanup = async (): Promise<void> => {
-      if (listenerInstances) {
-        await listenerInstances.stopListeningAsync();
-        listenerInstances = null;
-      }
-    };
+  /**
+   * Attaches exactly one listenMqtt handle to the 'mqtt' child slot.
+   * Resolves once MQTT confirms 'connect' so runManagedSession marks the session active
+   * only after events can actually flow.
+   */
+  const attachMqtt = (api: FcaApi, prefix: string): Promise<void> =>
+    new Promise<void>((resolve, reject) => {
+      // Reserve the generation BEFORE constructing the transport — a callback firing
+      // during listenMqtt() construction is then already covered by the fence.
+      const token = appstateManager.nextChildToken(asKey, 'mqtt');
+      let connected = false;
 
-    /**
-     * Platform-specific boot routine. Called once per retry attempt under markLocked.
-     * markActive is NOT called here — runManagedSession calls it after boot() resolves.
-     */
-    const boot = async (): Promise<void> => {
-      // A fresh start() always supersedes any prior stop() — reset so onEvent reconnect logic works normally.
-      isStopping = false;
-      // Dynamic import: wrapper.js pulls in all lib/* files which may fail at
-      // evaluation time — deferring keeps module load safe.
-      const { createFacebookApi } = await import('./wrapper.js');
-      sessionLogger.info('[facebook-messenger] Starting Listener...');
-
-      let appstate = config.appstate;
-      let prefix = config.prefix;
-
-      // WHY: Refresh credentials before every attempt so credential-update
-      // auto-restarts always use the latest appstate from the database.
-      const refreshConfig = async () => {
-        const botDetail = await botRepo.getById(
-          config.userId,
-          config.sessionId,
-        );
-        if (botDetail) {
-          appstate = (botDetail.credentials as any).appstate ?? appstate;
-          prefix = botDetail.prefix ?? prefix;
+      const fail = (err: unknown, isAuth: boolean): void => {
+        // Synchronous CAS — the first callback of an error burst wins; the rest drop.
+        if (!appstateManager.claimChild(asKey, 'mqtt', token)) return;
+        if (isAuth) {
+          // Flag for a full re-login: the cookie was invalidated server-side, so a
+          // fast-path MQTT reattach on the cached FcaApi would fail identically.
+          appstateManager.invalidate(asKey);
         }
+        void sessionManager.markInactive(smKey);
+
+        void (async () => {
+          await appstateManager.stopChildren(asKey);
+
+          if (!connected) {
+            // Pre-connect: boot()'s Promise is still pending. Rejecting hands control to
+            // the runner's backoff loop. A RAW auth error would make shouldRetry() return
+            // false and permanently halt the runner even though a fresh login would work —
+            // so auth failures are re-wrapped as a retryable error.
+            reject(
+              isAuth
+                ? new Error(
+                    '[facebook-messenger] MQTT session inactive — re-login scheduled for next retry',
+                  )
+                : err instanceof Error
+                  ? err
+                  : new Error(String(err)),
+            );
+            return;
+          }
+          // Post-connect: boot() already resolved, so reject() is a no-op. Re-enter the
+          // runner; its isLocked / isRetrying guards keep exactly one loop alive per key.
+          if (appstateManager.isStopping(asKey)) return;
+          void emitter.start();
+        })();
       };
-      await refreshConfig();
 
-      // Smart restart gate — only call startBot() when strictly required.
-      const appstateChanged =
-        activeAppstate !== null && appstate !== activeAppstate;
-      const needsLogin =
-        isInvalidSession || appstateChanged || activeFcaApi === null;
+      const handle = api.listenMqtt((err, rawEvent, state) => {
+        // Zombie fence: a superseded generation can neither emit nor reconnect.
+        if (!appstateManager.isChildCurrent(asKey, 'mqtt', token)) return;
 
-      if (needsLogin) {
-        if (isInvalidSession) {
-          sessionLogger.info(
-            '[facebook-messenger] Re-login required — previous session was flagged invalid',
-          );
-        } else if (appstateChanged) {
-          sessionLogger.info(
-            '[facebook-messenger] Re-login required — appstate updated via dashboard',
-          );
-        } else {
-          sessionLogger.info(
-            '[facebook-messenger] No existing session — initial login',
-          );
+        if (err) {
+          sessionLogger.error('[facebook-messenger] MQTT error', { error: err });
+          fail(err, isAuthError(err));
+          return;
         }
-        const { api } = await startBot({ appstate }, sessionLogger);
-        // Identity validation — confirm the logged-in account matches the expected FB
-        // identity. fca-cat-bot maintains module-level MQTT state; a concurrent login()
-        // for a different account can silently overwrite the internal connection context,
-        // merging this session onto another account's transport (the root cause of the
-        // 3-sessions-into-1-account collision). Throwing here keeps the runner's retry
-        // loop as the sole recovery path — no zombie sessions can accumulate.
-        const loggedInId = String(api.getCurrentUserID());
-        if (activeFbAccountId !== null && loggedInId !== activeFbAccountId) {
+
+        if (state) {
+          sessionLogger.info(`[facebook-messenger] MQTT state: ${state.type}`, {
+            mqttState: state,
+          });
+          if (state.type === 'connect') {
+            connected = true;
+            resolve();
+            return;
+          }
+          // fca fires close/disconnect/error as a STATE, not an err — without this branch
+          // a server-side idle timeout kills the session silently.
+          if (
+            state.type === 'close' ||
+            state.type === 'disconnect' ||
+            state.type === 'error'
+          ) {
+            // stopChildren() during a deliberate stop() triggers 'close'; do not race it.
+            if (appstateManager.isStopping(asKey)) return;
+            fail(new Error(`[facebook-messenger] MQTT ${state.type}`), false);
+          }
+          return;
+        }
+
+        // Guard routing so a malformed payload never throws through fca's synchronous
+        // callback and silently kills the entire MQTT connection.
+        try {
+          const apiWrapper = apiFactory!(api, config.sessionId, config.userId);
+          const native = {
+            userId: config.userId,
+            sessionId: config.sessionId,
+            platform: Platforms.FacebookMessenger,
+            api,
+            event: rawEvent,
+            fbAccountId: appstateManager.getFbAccountId(asKey),
+          };
+          routeRawEvent(rawEvent, apiWrapper, native, emitter, prefix);
+        } catch (routeErr) {
           sessionLogger.error(
-            `[facebook-messenger] Identity mismatch: expected fbAccountId=${activeFbAccountId}` +
-              ` but api.getCurrentUserID()=${loggedInId}` +
-              ` — library-level contamination detected; forcing re-login on retry.`,
-          );
-          isInvalidSession = true;
-          activeFcaApi = null;
-          persistState();
-          throw new Error(
-            `[facebook-messenger] FB account identity mismatch:` +
-              ` expected ${activeFbAccountId}, got ${loggedInId}`,
+            '[facebook-messenger] routeRawEvent failed (event dropped)',
+            { error: routeErr },
           );
         }
-        // Confirm and persist identity. Also seeds activeFbAccountId for sessions where
-        // the initial c_user parse returned null (non-standard appstate format).
-        activeFbAccountId = loggedInId;
-        activeFcaApi = api;
-        activeAppstate = appstate;
-        isInvalidSession = false;
-        persistState();
+      });
+
+      // A concurrent stop() during listenMqtt() would otherwise leave this connection
+      // running with no owner and no way to reach it — close it immediately instead.
+      const attached = appstateManager.attachChild(
+        asKey,
+        'mqtt',
+        { instance: handle, stop: () => handle.stopListeningAsync() },
+        token,
+      );
+      if (!attached) {
+        void handle.stopListeningAsync().catch(() => undefined);
+        reject(
+          new Error(
+            '[facebook-messenger] MQTT attach superseded by a newer generation',
+          ),
+        );
+      }
+    });
+
+  // ── E2EE child ───────────────────────────────────────────────────────────────
+
+  /**
+   * Rebuilds the E2EE child after a transport failure.
+   *
+   * A fresh FBClient is mandatory: disconnect() tears down the internal API reference,
+   * so connectE2EE() on the same object throws "Client is not connected" forever after.
+   * claimChild() ensures only one reconnect is in flight; it bumps ONLY the e2ee token,
+   * leaving the live MQTT callback untouched.
+   */
+  const reconnectE2EE = (token: number): void => {
+    if (appstateManager.isStopping(asKey)) return;
+    if (!appstateManager.claimChild(asKey, 'e2ee', token)) return;
+
+    void (async () => {
+      try {
+        await appstateManager.stopChild(asKey, 'e2ee');
+        await appstateManager.withLock(asKey, async () => {
+          if (appstateManager.isStopping(asKey)) return;
+          // E2EE rides on the FCA session; if MQTT dropped too, let its reconnect win.
+          if (!appstateManager.getApi(asKey)) {
+            sessionLogger.error(
+              '[facebook-messenger] E2EE reconnect skipped — MQTT session unavailable',
+            );
+            return;
+          }
+          await attachE2EE(activePrefix);
+        });
+        sessionLogger.info('[facebook-messenger] E2EE reconnection successful');
+      } catch (reconnectErr) {
+        const msg =
+          reconnectErr instanceof Error
+            ? reconnectErr.message
+            : String(reconnectErr);
+        sessionLogger.error(
+          `[facebook-messenger] E2EE reconnection failed: ${msg}`,
+        );
+      }
+    })();
+  };
+
+  /**
+   * Attaches exactly one FBClient to the 'e2ee' child slot.
+   *
+   * The E2EE transport runs concurrently with plaintext MQTT — both are children of the
+   * same appstate entry, so a stop() at the parent tears them down in the correct order
+   * (e2ee first, so the Signal handshake flushes before the FCA connection disappears).
+   */
+  const attachE2EE = async (prefix: string): Promise<void> => {
+    const api = appstateManager.getApi(asKey);
+    if (!api) {
+      throw new Error(
+        '[facebook-messenger] Cannot attach E2EE — no active FcaApi for this session',
+      );
+    }
+
+    // Dynamic obscure import keeps tsc from traversing fca-cat-bot's broken .ts files
+    const pkg = 'fca-cat-bot';
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const { FBClient: FBC, fmeInstance } = (await import(pkg)) as any;
+    // Bind BEFORE instantiation so no early FME output is missed; keyed so a reconnect
+    // replaces rather than stacks the handlers.
+    bindFmeLogger(asKey, fmeInstance, sessionLogger);
+
+    // Reserve the generation before constructing — onEvent may fire during connect().
+    const token = appstateManager.nextChildToken(asKey, 'e2ee');
+    // A fresh FBClient every time: disconnect() destroys the internal API reference, so
+    // connectE2EE() on a reused instance throws "Client is not connected" permanently.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const fbClient: any = new FBC({ platform: 'messenger', api });
+
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    fbClient.onEvent((event: any) => {
+      // Zombie fence — a superseded FBClient can neither emit nor trigger a reconnect.
+      if (!appstateManager.isChildCurrent(asKey, 'e2ee', token)) return;
+
+      // 'error' / 'disconnected' are transport failures, not routable messages.
+      if (
+        event.type === 'error' ||
+        (event.type === 'disconnected' && event.data?.isE2EE)
+      ) {
+        sessionLogger.warn(
+          `[facebook-messenger] E2EE ${String(event.type)} — reconnecting...`,
+          { data: event.data as Record<string, unknown> },
+        );
+        reconnectE2EE(token);
+        return;
+      }
+
+      try {
+        const apiWrapper = apiFactory!(api, config.sessionId, config.userId);
+        const native = {
+          userId: config.userId,
+          sessionId: config.sessionId,
+          platform: Platforms.FacebookMessenger,
+          api,
+          fbClient,
+          event,
+          // Identity propagation mirrors the MQTT path for diagnostic parity.
+          fbAccountId: appstateManager.getFbAccountId(asKey),
+        };
+        routeFbClientEvent(event, apiWrapper, native, emitter, prefix);
+      } catch (routeErr) {
+        sessionLogger.error(
+          '[facebook-messenger] E2EE routeFbClientEvent failed',
+          { error: routeErr },
+        );
+      }
+    });
+
+    // Superseded by a concurrent stop()/reconnect — close the orphan rather than leak it.
+    const attached = appstateManager.attachChild(
+      asKey,
+      'e2ee',
+      { instance: fbClient, stop: () => fbClient.disconnect() },
+      token,
+    );
+    if (!attached) {
+      await Promise.resolve(fbClient.disconnect()).catch(() => undefined);
+      throw new Error(
+        '[facebook-messenger] E2EE attach superseded by a newer generation',
+      );
+    }
+
+    const { userId: clientUserId } = (await fbClient.connect()) as {
+      userId: string;
+    };
+    await fbClient.connectE2EE({
+      userId: clientUserId,
+      // Device data lives on the appstate entry so Signal identity survives a reconnect.
+      deviceData: appstateManager.getDeviceData(asKey),
+      onUpdateDevice: (data: string) =>
+        appstateManager.setDeviceData(asKey, data),
+    });
+  };
+
+  // ── Runner hooks ─────────────────────────────────────────────────────────────
+
+  /**
+   * Tears down partial state between retry attempts. Called by runManagedSession before
+   * each non-first attempt. The FcaApi is deliberately preserved so a still-valid cookie
+   * can reattach MQTT without burning a re-login.
+   */
+  const cleanup = async (): Promise<void> => {
+    await appstateManager.stopChildren(asKey);
+  };
+
+  /**
+   * One boot attempt. Everything after ensure() runs under the appstate lock, so a
+   * concurrent stop()/destroy()/E2EE-reconnect can never interleave with it.
+   * markActive is NOT called here — runManagedSession fires it after boot() resolves.
+   */
+  const boot = async (): Promise<void> => {
+    // Deferred: wrapper.js pulls in every lib/* file, any of which may throw at
+    // evaluation time. apiFactory is a pure function — not transport state.
+    const { createFacebookApi } = await import('./wrapper.js');
+    apiFactory = createFacebookApi;
+
+    sessionLogger.info('[facebook-messenger] Starting Listener...');
+
+    // Refresh credentials on EVERY attempt so a dashboard credential update always
+    // takes effect on the next retry without a process restart.
+    const botDetail = await botRepo.getById(config.userId, config.sessionId);
+    const appstate =
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ((botDetail?.credentials as any)?.appstate as string | undefined) ??
+      config.appstate;
+    activePrefix = botDetail?.prefix ?? config.prefix;
+    const prefix = activePrefix;
+
+    const ensured = appstateManager.ensure(
+      config.userId,
+      config.sessionId,
+      appstate,
+    );
+
+    await appstateManager.withLock(asKey, async () => {
+      // Idempotent boot: any surviving child from an aborted retry, a mid-boot stop, or
+      // a credential rotation is closed here. This is what structurally guarantees the
+      // "exactly one mqtt handle + one e2ee handle" invariant per appstate key.
+      await appstateManager.stopChildren(asKey);
+      // Re-arm inside the lock: a stop() that won the race set isStopping before we
+      // acquired it, and every child callback consults this flag.
+      appstateManager.beginStart(asKey);
+
+      if (appstateManager.needsLogin(asKey)) {
+        sessionLogger.info(
+          ensured === 'rotated'
+            ? '[facebook-messenger] Re-login required — appstate updated via dashboard'
+            : ensured === 'created'
+              ? '[facebook-messenger] No existing session — initial login'
+              : '[facebook-messenger] Re-login required — previous session was flagged invalid',
+        );
+        await appstateManager.login(asKey, sessionLogger, startBot);
       } else {
         sessionLogger.info(
           '[facebook-messenger] Session intact — reattaching MQTT listener without re-login',
         );
       }
 
-      // reconnecting flag deduplicates burst MQTT errors — only one restart races at a time.
-      let reconnecting = false;
-      // Tracks whether MQTT has fired 'connect'. Pre-connect recoverable errors must reject
-      // boot() — void emitter.start() is a no-op while isRetrying is true inside the runner,
-      // so without this flag the Promise would hang indefinitely on a pre-connect network fault.
-      let mqttConnected = false;
+      const api = appstateManager.getApi(asKey);
+      if (!api) {
+        throw new Error(
+          '[facebook-messenger] FcaApi missing after login — aborting boot',
+        );
+      }
 
-      const listen = (fcaApi: FcaApi): Promise<void> => {
-        return new Promise<void>((resolve, reject) => {
-          listenerInstances = fcaApi.listenMqtt((err, rawEvent, state) => {
-            if (err) {
-              sessionLogger.error('[facebook-messenger] MQTT error', {
-                    error: err,
-                  });
+      // boot() resolves only once MQTT reports 'connect', so the dashboard never shows a
+      // session as online before events can actually flow.
+      await attachMqtt(api, prefix);
 
-                  // Auth errors from MQTT (e.g. account_inactive / not_logged_in) mean the
-                  // fca-unofficial session cookie was invalidated server-side. Flag for
-                  // re-login so the next boot() calls startBot() for a fresh fca login.
-                  // Pre-connect: boot() is still pending — reject with a retryable error so
-                  // the runner's backoff loop picks it up. Post-connect: boot() already
-                  // resolved and reject() is a no-op — re-enter the runner via emitter.start()
-                  // so the managed retry fires just like Discord, Telegram, and Facebook Page.
-                  // WHY NOT reject(err): the raw auth error causes shouldRetry → isAuthError
-                  // to return false, permanently halting the runner — no recovery ever
-                  // occurs even though a new fca-unofficial login would succeed.
-                  if (isAuthError(err)) {
-                    sessionLogger.error(
-                      '[facebook-messenger] MQTT auth error — session flagged for re-login on next retry',
-                  { error: err },
-                );
-                isInvalidSession = true;
-                // Null before persistState() so the registry snapshot also carries null,
-                // giving a belt-and-suspenders guarantee that needsLogin evaluates true
-                    // on the next boot() even if isInvalidSession were somehow cleared.
-                    activeFcaApi = null;
-                    persistState(); // saves isInvalidSession=true and activeFcaApi=null
-                    void sessionManager.markInactive(smKey);
-                    if (!mqttConnected) {
-                      // Pre-connect: boot() Promise is still pending — reject with a retryable
-                      // error so the platform runner's exponential-backoff loop picks it up.
-                      reject(
-                        new Error(
-                          '[facebook-messenger] MQTT session inactive — re-login scheduled for next retry',
-                        ),
-                      );
-                    } else {
-                      // Post-connect: boot() already resolved; runner has no pending Promise.
-                      // Re-enter the runner manually — isInvalidSession=true + activeFcaApi=null
-                      // (set above) guarantee the next boot() triggers a full startBot() re-login
-                      // instead of the fast-path MQTT reattach. Mirrors the recoverable-error
-                      // post-connect restart pattern on the lines below.
-                      const prev = listenerInstances;
-                      listenerInstances = null;
-                      void (async () => {
-                        try {
-                          if (prev) await prev.stopListeningAsync();
-                        } catch {
-                          /* non-fatal — proceed to restart regardless */
-                        }
-                        void emitter.start();
-                      })();
-                    }
-                    return;
-                  }
-
-                  // Burst-error guard — only one reconnect attempt in flight at a time.
-              if (reconnecting) return;
-              reconnecting = true;
-
-              sessionLogger.info(
-                '[facebook-messenger] MQTT error — triggering managed restart...',
-              );
-
-              // Stop the stale MQTT connection then re-enter the centralized runner.
-              // The runner provides exponential backoff with isRetrying / isLocked guards —
-              // no nested withRetry needed here, eliminating the zombie-listener risk.
-              const prev = listenerInstances;
-              listenerInstances = null;
-              void (async () => {
-                try {
-                  if (prev) await prev.stopListeningAsync();
-                } catch {
-                  /* non-fatal — proceed to restart regardless */
-                }
-                reconnecting = false;
-                // Pre-connect error: the Promise is still pending and void emitter.start()
-                // would be silently dropped (isRetrying = true). Reject boot() so the runner's
-                // retry loop picks it up with backoff from a clean state.
-                // Post-connect: MQTT disconnected after a live session — re-enter the runner
-                // for normal reconnection as before.
-                if (!mqttConnected) {
-                  reject(err);
-                } else {
-                  void emitter.start();
-                }
-              })();
-              return;
-            }
-
-            // MQTT lifecycle state changes (connect, disconnect, close, error) are delivered
-            // as the third argument — log for operational visibility and return.
-            if (state) {
-              sessionLogger.info(
-                `[facebook-messenger] MQTT state: ${state.type}`,
-                { mqttState: state },
-              );
-              // Resolve once MQTT confirms the connection is live — boot() returns only after
-              // the transport is established, making the session startup strictly sequential.
-              // runManagedSession calls markActive AFTER boot() resolves, so the dashboard
-              // never shows the session as online before events can actually flow.
-              if (state.type === 'connect') {
-                mqttConnected = true;
-                resolve();
-                return;
-              }
-              // 'close', 'disconnect' and 'error' state types signal the MQTT transport has dropped
-              // without an error object — fca-unofficial fires these when the server closes
-              // the connection cleanly (e.g. idle timeout, server-side restart, network cut).
-              // Without this branch the session silently dies because the error path never
-              // fires: fca delivers state transitions as the third callback argument, not err.
-              if (state.type === 'close' || state.type === 'disconnect' || state.type == 'error') {
-                // isStopping is set by emitter.stop() before calling stopListeningAsync() —
-                // stopListeningAsync() triggers a 'close' callback as part of teardown, so
-                // this guard prevents a reconnect loop from racing the deliberate stop sequence.
-                if (isStopping) return;
-                // Burst guard — only one reconnect in flight at a time; mirrors the error path.
-                if (reconnecting) return;
-                reconnecting = true;
-                sessionLogger.info(
-                  `[facebook-messenger] MQTT ${state.type} — triggering managed restart...`,
-                );
-                const prev = listenerInstances;
-                listenerInstances = null;
-                void (async () => {
-                  try {
-                    if (prev) await prev.stopListeningAsync();
-                  } catch {
-                    /* non-fatal — proceed to restart regardless */
-                  }
-                  reconnecting = false;
-                  // Pre-connect close/disconnect: boot() Promise is still pending — reject so
-                  // the runner's retry loop picks it up with exponential backoff rather than
-                  // hanging indefinitely on an unresolved Promise.
-                  // Post-connect close/disconnect: MQTT dropped after a live session — re-enter
-                  // the centralized runner for normal managed reconnection with backoff.
-                  if (!mqttConnected) {
-                    reject(new Error(`MQTT ${state.type} before connection established`));
-                  } else {
-                    void emitter.start();
-                  }
-                })();
-              }
-              return;
-            }
-
-            const apiWrapper = createFacebookApi(
-              fcaApi,
-              config.sessionId,
-              config.userId,
-            );
-            const native = {
-              userId: config.userId,
-              sessionId: config.sessionId,
-            platform: Platforms.FacebookMessenger,
-            api: fcaApi,
-            event: rawEvent,
-            // Carry the confirmed FB account ID so downstream command handlers can
-            // optionally validate event ownership without an extra API call.
-            fbAccountId: activeFbAccountId,
-          };
-
-            // Guard routeRawEvent so a malformed payload never throws through fca-unofficial's
-            // synchronous callback and silently kills the entire MQTT connection.
-            try {
-              routeRawEvent(rawEvent, apiWrapper, native, emitter, prefix);
-            } catch (routeErr) {
-              sessionLogger.error(
-                '[facebook-messenger] routeRawEvent failed (event dropped)',
-                { error: routeErr },
-              );
-            }
-          });
-        }); // closes new Promise<void>((resolve, reject))
-      };
-
-      // start() is the sole owner of the MQTT listener — startBot() deliberately does NOT
-      // call listenMqtt so there is exactly one listener on the connection at all times.
-      await listen(activeFcaApi!);
-
-      // Native FBClient E2EE Session Configuration — runs concurrently with plaintext MQTT
-      // to support both transport protocols. fbClient writes to factory-scope let so stop() can disconnect.
       if (env.FCA_ENABLE_E2EE) {
-        // Dynamic obscure import prevents tsc from traversing fca-cat-bot and evaluating its broken .ts files
-        const pkg = 'fca-cat-bot';
-        const { FBClient: FBC, fmeInstance } = (await import(pkg)) as any;
-        // Mirror the fcaLogger bridge in login.ts — wire FME structured log output to the session
-        // logger BEFORE any FBClient instantiation so no early output is missed. Set up once here
-        // so that re-calls to initializeE2EEClient() during reconnect do NOT add duplicate listeners.
-        const { fmeLogger } = fmeInstance({ emitLogger: true });
-        fmeLogger.on('info', (l: { message: string }) =>
-          sessionLogger.info(`[facebook-messenger] [fme] ${l.message}`),
-        );
-        fmeLogger.on('warn', (l: { message: string }) =>
-          sessionLogger.warn(`[facebook-messenger] [fme] ${l.message}`),
-        );
-        fmeLogger.on('error', (l: { message: string }) =>
-          sessionLogger.error(`[facebook-messenger] [fme] ${l.message}`),
-        );
-
-        // Prevents concurrent E2EE reconnect attempts — mirrors the MQTT reconnecting flag pattern.
-        let e2eeReconnecting = false;
-
-        /**
-         * Full E2EE initialization: creates a FRESH FBClient, wires onEvent, then calls
-         * connect() + connectE2EE() in sequence. Must be called both on initial boot and on
-         * every E2EE reconnect.
-         *
-         * WHY NOT reuse the disconnected instance: fbClient.disconnect() tears down the internal
-         * API reference inside FBClient. Any subsequent connectE2EE() call on the same object
-         * throws "Client is not connected (no API instance available)" — the error seen in logs.
-         * Re-instantiating a fresh FBClient is the only safe path back to a live E2EE session.
-         */
-        const initializeE2EEClient = async (): Promise<void> => {
-          // Create a fresh FBClient every time — stale instances cannot be resurrected after disconnect().
-          fbClient = new FBC({ platform: 'messenger', api: activeFcaApi });
-
-          fbClient.onEvent((event: any) => {
-            // FBClient lifecycle events (error, disconnected) are not routable messages —
-            // they signal transport failure and require a clean disconnect + full re-initialization.
-            if (
-              event.type === 'error' ||
-              (event.type === 'disconnected' && (event.data as any)?.isE2EE)
-            ) {
-              // Intentional stop in progress — fbClient.disconnect() in emitter.stop() fires these
-              // callbacks; returning here prevents a reconnect loop from racing the teardown sequence.
-              if (isStopping) return;
-              // Burst guard: only one reconnect attempt in flight at a time.
-              if (e2eeReconnecting) return;
-              e2eeReconnecting = true;
-              sessionLogger.warn(
-                `[facebook-messenger] E2EE ${event.type as string} — disconnecting and reconnecting...`,
-                { data: event.data as Record<string, unknown> },
-              );
-              void (async () => {
-                try {
-                  // Flush pending Signal/Noise state before tearing down the transport.
-                  if (fbClient) await fbClient.disconnect();
-                  // Null out the dead instance — initializeE2EEClient assigns a fresh one below.
-                  fbClient = null;
-                } catch {
-                  /* non-fatal — proceed to re-initialize regardless */
-                }
-                try {
-                  // activeFcaApi must be alive for E2EE to function — if the MQTT session
-                  // has simultaneously dropped, skip and let the MQTT reconnect handle recovery.
-                  if (!activeFcaApi) {
-                    sessionLogger.error(
-                      '[facebook-messenger] E2EE reconnect skipped — MQTT session unavailable',
-                    );
-                    return;
-                  }
-                  // Re-instantiate FBClient from scratch: disconnect() tears down the internal
-                  // API reference, so connectE2EE() on the old instance always fails.
-                  await initializeE2EEClient();
-                  sessionLogger.info(
-                    '[facebook-messenger] E2EE reconnection successful',
-                  );
-                } catch (reconnectErr) {
-                  const msg =
-                    reconnectErr instanceof Error
-                      ? reconnectErr.message
-                      : String(reconnectErr);
-                  sessionLogger.error(
-                    `[facebook-messenger] E2EE reconnection failed: ${msg}`,
-                  );
-                } finally {
-                  e2eeReconnecting = false;
-                }
-              })();
-              return;
-            }
-            try {
-              const apiWrapper = createFacebookApi(
-                activeFcaApi!,
-                config.sessionId,
-                config.userId,
-              );
-              const native = {
-                userId: config.userId,
-                sessionId: config.sessionId,
-                platform: Platforms.FacebookMessenger,
-                api: activeFcaApi,
-                fbClient,
-                event,
-                // Same identity propagation as the MQTT path for diagnostic parity.
-                fbAccountId: activeFbAccountId,
-              };
-              routeFbClientEvent(event, apiWrapper, native, emitter, prefix);
-            } catch (routeErr) {
-              sessionLogger.error(
-                '[facebook-messenger] E2EE routeFbClientEvent failed',
-                { error: routeErr },
-              );
-            }
-          });
-
-          const { userId: clientUserId } = await fbClient.connect();
-          const deviceData = e2eeDeviceStoreMap.get(config.sessionId);
-          await fbClient.connectE2EE({
-            userId: clientUserId,
-            deviceData,
-            onUpdateDevice: (data: string) =>
-              e2eeDeviceStoreMap.set(config.sessionId, data),
-          });
-        };
-
         try {
-          await initializeE2EEClient();
+          await attachE2EE(prefix);
           sessionLogger.info(
             '[facebook-messenger] Native E2EE connection established',
           );
         } catch (error) {
+          // Non-fatal: plaintext MQTT is live. E2EE alone must not fail the whole boot.
           const message =
             error instanceof Error ? error.message : String(error);
           sessionLogger.error(
@@ -604,11 +483,14 @@ export function createFacebookMessengerListener(
           );
         }
       }
-    };
 
-    sessionLogger.info('[facebook-messenger] Listener active');
-    // markActive NOT called here — runManagedSession calls it after boot() returns.
+      sessionLogger.info('[facebook-messenger] Listener active');
+    });
+  };
 
+  // ── Lifecycle surface consumed by sessionManager ─────────────────────────────
+
+  emitter.start = async (): Promise<void> => {
     await runManagedSession({
       smKey,
       sessionLogger,
@@ -618,29 +500,32 @@ export function createFacebookMessengerListener(
     });
   };
 
+  /**
+   * Soft stop: closes both children, keeps the appstate entry and FcaApi so a subsequent
+   * Start reattaches MQTT without a re-login (avoiding needless Meta auth traffic).
+   */
   emitter.stop = async (_signal?: string): Promise<void> => {
     if (sessionManager.isLocked(smKey)) return;
     sessionManager.markLocked(smKey);
     try {
       sessionLogger.info('[facebook-messenger] Stopping Listener...');
-      // Set before fbClient.disconnect() — the disconnect call synchronously fires onEvent callbacks
-      // ('error', 'disconnected') which must not attempt reconnection during deliberate teardown.
-      isStopping = true;
-      // Disconnect the E2EE (Signal/Noise) transport before tearing down MQTT — ensures the
-      // FBClient WebSocket handshake state is flushed cleanly before the underlying FCA
-      // connection disappears, preventing orphaned Signal sessions on the server side.
-      if (fbClient) {
-        await fbClient.disconnect();
-        fbClient = null;
-      }
-      // Only tear down the MQTT listener — activeFcaApi is intentionally preserved in the
-      // registry so a subsequent start() (dashboard Restart, process restart) can reattach
-      // without re-login when the session cookie is still valid.
-      if (listenerInstances) await listenerInstances.stopListeningAsync();
-      listenerInstances = null;
+      await appstateManager.detachSession(asKey);
     } finally {
       sessionManager.markUnlocked(smKey);
     }
+  };
+
+  /**
+   * Hard teardown, invoked by sessionManager.unregister(). Evicts the appstate entry and
+   * both logger bridges so a rebuilt closure — from credential rotation, ban, or delete —
+   * inherits nothing at all. This is the guarantee that no zombie FcaApi survives anywhere.
+   */
+  emitter.destroy = async (): Promise<void> => {
+    sessionLogger.info('[facebook-messenger] Destroying session state...');
+    await appstateManager.destroySession(asKey);
+    unbindFcaLoggerBridge(asKey);
+    unbindFmeLogger(asKey);
+    apiFactory = null;
   };
 
   return emitter;
