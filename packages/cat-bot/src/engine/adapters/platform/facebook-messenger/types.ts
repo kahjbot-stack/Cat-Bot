@@ -22,6 +22,14 @@ export interface MqttState {
 }
 
 /**
+ * Handle returned by fca-unofficial's listenMqtt(). Named so the appstate manager can
+ * store the MQTT child in a typed slot without importing any library internals.
+ */
+export interface MqttListenerHandle {
+  stopListeningAsync: () => Promise<void>;
+}
+
+/**
  * Full interface for the fca-unofficial api object.
  * fca-unofficial has no published @types package — this declaration captures
  * every method consumed by any lib/ file in this adapter.
@@ -139,9 +147,7 @@ export interface FcaApi {
       event: Record<string, unknown>,
       state?: MqttState,
     ) => void,
-  ): {
-    stopListeningAsync: () => Promise<void>;
-  };
+  ): MqttListenerHandle;
 }
 
 /** Configuration accepted by startBot(). */
@@ -149,6 +155,11 @@ export interface StartBotConfig {
   prefix?: string;
   /** JSON.stringify'd fca-unofficial session cookie blob loaded from the database. */
   appstate: string;
+  /**
+   * Appstate-manager entry key (`${userId}:${sessionId}`). Scopes the fca logger bridge
+   * so one account's login output never fans into another session's dashboard console.
+   */
+  key?: string;
 }
 
 /** Result of startBot() — raw fca api handle + null listener placeholder. */
@@ -161,4 +172,9 @@ export interface StartBotResult {
 export type FacebookMessengerEmitter = EventEmitter & {
   start: () => Promise<void>;
   stop: (signal?: string) => Promise<void>;
+  /**
+   * Hard teardown: stops both child listeners AND evicts the appstate-manager entry.
+   * Called by sessionManager.unregister() so a rebuilt closure starts from zero state.
+   */
+  destroy: () => Promise<void>;
 };
