@@ -29,4 +29,10 @@ export default defineConfig({
       },
     },
   },
+  preview: {
+    host: "0.0.0.0",
+    allowedHosts: [
+      "web-production-d2a95.up.railway.app"
+    ],
+  },
 })
