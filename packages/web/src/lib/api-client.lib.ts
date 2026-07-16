@@ -300,7 +300,7 @@ class ApiClient {
 
 // Create and export singleton instance
 const apiClient = new ApiClient({
-  baseURL: window.location.origin,
+  baseURL: import.meta.env['VITE_SERVER_URL'] || window.location.origin,
   withCredentials: true,
   headers: {
     'Content-Type': 'application/json',
