@@ -33,6 +33,8 @@ const isNeon = env.DATABASE_TYPE === 'neondb';
 const isEmailServicesEnabled = env.VITE_EMAIL_SERVICES_ENABLE === 'true';
 
 export const auth = betterAuth({
+  baseURL: env.BETTER_AUTH_URL,
+  
   database: isJson
     ? jsonAdapter()
     : // NeonDB — neonPool is a pg.Pool; better-auth uses KyselyDialect(PostgresDialect) under the hood.
@@ -127,7 +129,9 @@ export const auth = betterAuth({
     },
   },
   // Trust the dynamic dev server URL if provided. In production, same-origin is inherently trusted.
-  trustedOrigins: env.VITE_URL ? [env.VITE_URL] : undefined,
+ trustedOrigins: [
+  'https://web-production-d2a95.up.railway.app',
+],
   // Admin plugin provides /api/auth/admin/* endpoints (createUser, setRole, banUser, etc.).
   // Admin and user sessions are always independent: impersonation creates a new session row
   // with impersonatedBy = adminId while the admin's original session is never modified or revoked.
