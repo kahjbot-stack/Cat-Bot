@@ -14,7 +14,7 @@
 import { createAuthClient } from 'better-auth/react'
 
 export const authUserClient = createAuthClient({
-  // baseURL: import.meta.env['VITE_SERVER_URL'] as string,
+   baseURL: import.meta.env['VITE_SERVER_URL'] as string,
   fetchOptions: {
     // Include cookies on every request so the session token travels with auth calls
     credentials: 'include',
