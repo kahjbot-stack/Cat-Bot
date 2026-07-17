@@ -17,15 +17,15 @@ export default defineConfig({
     // cookie issues in development and means the better-auth client needs no explicit baseURL.
     proxy: {
       '/api': {
-        target: 'http://localhost:3000',
+        target: 'https://cat-bot-production-9c5a.up.railway.app',
         changeOrigin: true,
       },
       // Forward socket.io traffic (HTTP polling + WS upgrade) to the backend.
       // ws: true is required for the WebSocket upgrade to be proxied correctly.
       '/socket.io': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-        ws: true,
+  target: 'https://cat-bot-production-9c5a.up.railway.app',
+  changeOrigin: true,
+  ws: true,
       },
     },
   },
