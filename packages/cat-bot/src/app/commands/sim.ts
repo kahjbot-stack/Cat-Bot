@@ -10,7 +10,9 @@ import {
   savage,
   randomReplies,
   flirtyReplies,
-  roastReplies
+  roastReplies,
+  randomSavageReplies,
+  villainEraReplies,
 } from "./sim.replies.js";
 
 export const config: CommandConfig = {
