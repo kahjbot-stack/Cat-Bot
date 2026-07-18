@@ -144,6 +144,41 @@ else if (
     reply = random(savage);
   }
 
+    // Random Savage
+  else if (
+    text.includes("asar") ||
+    text.includes("joke") ||
+    text.includes("lol") ||
+    text.includes("haha") ||
+    text.includes("hahaha") ||
+    text.includes("trip") ||
+    text.includes("inis") ||
+    text.includes("loko")
+  ) {
+    reply = random(randomSavageReplies);
+  }
+
+      // Villain Era / Dramatic
+  else if (
+    text.includes("iwan") ||
+    text.includes("iniwan") ||
+    text.includes("ex") ||
+    text.includes("break") ||
+    text.includes("hiwalay") ||
+    text.includes("sakit") ||
+    text.includes("malungkot") ||
+    text.includes("iyak") ||
+    text.includes("bumalik") ||
+    text.includes("miss kita")
+  ) {
+    reply = random(villainEraReplies);
+  }
+
+  // Random
+  else {
+    reply = random(randomReplies);
+  }
+  
   // Name
   else if (
   text.includes("name") ||
