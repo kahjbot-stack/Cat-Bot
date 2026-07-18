@@ -9,7 +9,7 @@ import {
   kiss,
   savage,
   randomReplies,
-} from "./sim.replies";
+} from "./sim.replies.js";
 
 export const config: CommandConfig = {
   name: "sim",
