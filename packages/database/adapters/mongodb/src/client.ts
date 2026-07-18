@@ -8,6 +8,9 @@ const MONGODB_URI_RAW = process.env['MONGODB_URI'];
 const MONGO_PASSWORD = process.env['MONGO_PASSWORD'];
 const MONGO_DATABASE_NAME = process.env['MONGO_DATABASE_NAME'];
 
+console.log("MONGODB_URI =", MONGODB_URI_RAW);
+console.log("MONGO_DATABASE_NAME =", MONGO_DATABASE_NAME);
+
 if (!MONGODB_URI_RAW) {
   throw new Error(
     '[MongoDB] Missing required env var: MONGODB_URI\n' +
