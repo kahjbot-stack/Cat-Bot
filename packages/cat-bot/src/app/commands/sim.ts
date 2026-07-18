@@ -164,7 +164,7 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     text.includes("bumalik") ||
     text.includes("balik kana sakin")
   ) {
-    reply = random(villainEraReplies);
+    reply = "TEST VILLAIN GUMAGANA";
   }
 
   // Name
