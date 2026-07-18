@@ -25,7 +25,7 @@ export const config: CommandConfig = {
 };
 
 function random(arr: string[]): string {
-  return arr[Math.floor(Math.random() * arr.length)];
+  return arr[Math.floor(Math.random() * arr.length)]!;
 }
 
 export const onCommand = async (ctx: AppCtx): Promise<void> => {
