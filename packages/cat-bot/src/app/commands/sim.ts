@@ -76,26 +76,25 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     reply = random(greetings);
   }
 
-  // Love
-  else if (
-    hasWord(
-      "love",
-      "mahal",
-      "mahalin",
-      "jowa",
-      "bf",
-      "boyfriend",
-      "gf",
-      "girlfriend",
-      "inlove"
-    ) ||
-    text.includes("mahal kita") ||
-    text.includes("mahal mo ba ako") ||
-    text.includes("in love")
-  ) {
-    reply = random(loveReplies);
-  }
-
+ // Love (TEST)
+else if (
+  hasWord(
+    "love",
+    "mahal",
+    "mahalin",
+    "jowa",
+    "bf",
+    "boyfriend",
+    "gf",
+    "girlfriend"
+  ) ||
+  text.includes("mahal kita") ||
+  text.includes("mahal mo ba ako") ||
+  text.includes("in love")
+) {
+  reply = "🚨 TEST LOVE REPLIES 🚨";
+}
+  
   // Crush
   else if (
     hasWord("crush") ||
