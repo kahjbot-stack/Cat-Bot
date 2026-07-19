@@ -5,20 +5,22 @@ import type { CommandConfig } from "@/engine/types/module-config.types.js";
 
 import {
   greetings,
-  love,
-  kiss,
-  savage,
-  randomReplies,
+  loveReplies,
+  crushReplies,
+  kissReplies,
   flirtyReplies,
   roastReplies,
+  tarantadoReplies,
+  murahanReplies,
   randomSavageReplies,
   villainEraReplies,
+  randomReplies,
 } from "./sim.replies.js";
 
 export const config: CommandConfig = {
   name: "sim",
   aliases: [],
-  version: "1.0.0",
+  version: "2.0.0",
   role: Role.ANYONE,
   author: "Kahj",
   description: "Funny Sim AI",
@@ -47,7 +49,7 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
 
   let reply = "";
 
-  // Greetings
+    // Greetings
   if (
     text.includes("hi") ||
     text.includes("hello") ||
@@ -66,91 +68,127 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
 
   // Flirty
   else if (
-    text.includes("miss mo ba ako") ||
-    text.includes("mahal kita") ||
-    text.includes("crush kita") ||
-    text.includes("date") ||
-    text.includes("ligaw") ||
     text.includes("landi") ||
-    text.includes("lambing") ||
+    text.includes("landi tayo") ||
+    text.includes("date") ||
+    text.includes("labas tayo") ||
     text.includes("yakap") ||
     text.includes("hug") ||
     text.includes("kiss") ||
     text.includes("halik") ||
+    text.includes("baby") ||
+    text.includes("babe") ||
+    text.includes("beb") ||
+    text.includes("mahal") ||
     text.includes("cute") ||
     text.includes("ganda") ||
     text.includes("gwapo") ||
     text.includes("hot") ||
-    text.includes("baby") ||
-    text.includes("babe") ||
-    text.includes("beb") ||
-    text.includes("mahal")
+    text.includes("sexy")
   ) {
     reply = random(flirtyReplies);
   }
 
-  // Love
+    // Love
   else if (
     text.includes("love") ||
-    text.includes("crush") ||
+    text.includes("mahal kita") ||
+    text.includes("mahal mo ba ako") ||
+    text.includes("mahal") ||
+    text.includes("inlove") ||
+    text.includes("in love") ||
+    text.includes("jowa") ||
     text.includes("bf") ||
+    text.includes("boyfriend") ||
     text.includes("gf") ||
-    text.includes("jowa")
+    text.includes("girlfriend")
   ) {
-    reply = random(love);
+    reply = random(loveReplies);
+  }
+
+  // Crush
+  else if (
+    text.includes("crush") ||
+    text.includes("crush mo ba ako") ||
+    text.includes("crush kita") ||
+    text.includes("type mo ba ako") ||
+    text.includes("type kita") ||
+    text.includes("gusto mo ba ako") ||
+    text.includes("gusto kita") ||
+    text.includes("may gusto ka ba sakin") ||
+    text.includes("miss mo ba ako") ||
+    text.includes("namimiss mo ba ako")
+  ) {
+    reply = random(crushReplies);
   }
 
   // Kiss
   else if (
     text.includes("kiss") ||
     text.includes("halik") ||
-    text.includes("beso")
+    text.includes("beso") ||
+    text.includes("mwah") ||
+    text.includes("mwa") ||
+    text.includes("halikan") ||
+    text.includes("halik nga")
   ) {
-    reply = random(kiss);
+    reply = random(kissReplies);
   }
 
-  // Roast / Asaran
+    // Tarantado Replies
+  else if (
+    text.includes("tarantado") ||
+    text.includes("ulol") ||
+    text.includes("loko") ||
+    text.includes("gago") ||
+    text.includes("bwisit") ||
+    text.includes("asar") ||
+    text.includes("inis") ||
+    text.includes("kupal")
+  ) {
+    reply = random(tarantadoReplies);
+  }
+
+  // Murahan Replies
+  else if (
+    text.includes("puta") ||
+    text.includes("putangina") ||
+    text.includes("tangina") ||
+    text.includes("gagi") ||
+    text.includes("leche") ||
+    text.includes("punyeta") ||
+    text.includes("hayop")
+  ) {
+    reply = random(murahanReplies);
+  }
+
+  // Roast Replies
   else if (
     text.includes("tanga") ||
     text.includes("bobo") ||
-    text.includes("gago") ||
-    text.includes("pangit") ||
-    text.includes("ulol") ||
     text.includes("engot") ||
-    text.includes("tarantado") ||
-    text.includes("bwisit") ||
+    text.includes("pangit") ||
     text.includes("sira ulo") ||
-    text.includes("loko") ||
-    text.includes("gunggong") ||
-    text.includes("ogag") ||
-    text.includes("inutil") ||
-    text.includes("ew")
+    text.includes("bugok") ||
+    text.includes("obob") ||
+    text.includes("lutang")
   ) {
     reply = random(roastReplies);
   }
 
-  // Savage
+  // Random Savage 😂
   else if (
-    text.includes("mura") ||
-    text.includes("sira")
-  ) {
-    reply = random(savage);
-  }
-
-  // Random Savage
-  else if (
-    text.includes("asar") ||
-    text.includes("joke") ||
-    text.includes("lol") ||
     text.includes("haha") ||
     text.includes("hahaha") ||
+    text.includes("lol") ||
+    text.includes("joke") ||
     text.includes("trip") ||
-    text.includes("inis")
+    text.includes("meme")
   ) {
     reply = random(randomSavageReplies);
   }
 
-  // Villain Era / Dramatic
+  // Villain Era 🖤
   else if (
     text.includes("ex") ||
     text.includes("breakup") ||
@@ -159,15 +197,15 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     text.includes("iniwan") ||
     text.includes("iwan") ||
     text.includes("sakit") ||
+    text.includes("masakit") ||
     text.includes("malungkot") ||
     text.includes("iyak") ||
-    text.includes("bumalik") ||
-    text.includes("balik kana sakin")
+    text.includes("bumalik")
   ) {
     reply = random(villainEraReplies);
   }
 
-  // Name
+  // Name 👤
   else if (
     text.includes("name") ||
     text.includes("pangalan") ||
@@ -178,66 +216,17 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     reply = "Ako si Sim. 😎";
   }
 
-  // Age
+  // Age 🎂
   else if (
     text.includes("ilang taon") ||
-    text.includes("age") ||
     text.includes("edad") ||
+    text.includes("age") ||
     text.includes("birthday")
   ) {
     reply = "Secret ang age ko. 😌";
   }
 
-  // Creator
-  else if (
-    text.includes("creator") ||
-    text.includes("owner") ||
-    text.includes("developer") ||
-    text.includes("gumawa") ||
-    text.includes("sino gumawa sayo")
-  ) {
-    reply = "Ginawa ako ni Kahj. ❤️";
-  }
-
-  // Thank you
-  else if (
-    text.includes("thank") ||
-    text.includes("thanks") ||
-    text.includes("salamat") ||
-    text.includes("ty") ||
-    text.includes("tnx")
-  ) {
-    reply = "Welcome. 😎";
-  }
-
-  // Bye
-  else if (
-    text.includes("bye") ||
-    text.includes("goodbye") ||
-    text.includes("aalis") ||
-    text.includes("alis muna") ||
-    text.includes("see you")
-  ) {
-    reply = "Bye. Ingat ka. 👋";
-  }
-
-  // Good morning
-  else if (
-    text.includes("good morning") ||
-    text.includes("magandang umaga")
-  ) {
-    reply = "Good morning! ☀️";
-  }
-
-  // Good night
-  else if (
-    text.includes("good night") ||
-    text.includes("matutulog")
-  ) {
-    reply = "Good night. Sweet dreams. 🌙";
-  }
-
-  // FINAL RANDOM
+   // Final Random
   else {
     reply = random(randomReplies);
   }
