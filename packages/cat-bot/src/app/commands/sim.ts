@@ -213,7 +213,7 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     text.includes("who are you") ||
     text.includes("ano pangalan mo")
   ) {
-    reply = "Ako si Sim. 😎";
+    reply = random(nameReplies);
   }
 
   // Age 🎂
@@ -223,7 +223,7 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     text.includes("age") ||
     text.includes("birthday")
   ) {
-    reply = "Secret ang age ko. 😌";
+    reply = random(ageReplies);
   }
 
    // Final Random
