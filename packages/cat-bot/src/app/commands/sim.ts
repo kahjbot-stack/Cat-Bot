@@ -76,7 +76,7 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     reply = random(greetings);
   }
 
- // Love (TEST)
+// Love
 else if (
   hasWord(
     "love",
@@ -92,7 +92,7 @@ else if (
   text.includes("mahal mo ba ako") ||
   text.includes("in love")
 ) {
-  reply = "🚨 TEST LOVE REPLIES 🚨";
+  reply = loveReplies[0];
 }
   
   // Crush
@@ -108,7 +108,7 @@ else if (
     text.includes("miss mo ba ako") ||
     text.includes("namimiss mo ba ako")
   ) {
-    reply = random(crushReplies);
+    reply = crushReplies[0];
   }
 
     // Kiss
