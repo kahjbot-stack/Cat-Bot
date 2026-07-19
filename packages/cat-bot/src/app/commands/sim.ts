@@ -176,19 +176,22 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     reply = random(roastReplies);
   }
 
-  // Random Savage 😂
+   // Random Savage
   else if (
     text.includes("haha") ||
     text.includes("hahaha") ||
     text.includes("lol") ||
+    text.includes("lmao") ||
+    text.includes("xd") ||
+    text.includes("char") ||
     text.includes("joke") ||
-    text.includes("trip") ||
-    text.includes("meme")
+    text.includes("eme") ||
+    text.includes("trip")
   ) {
     reply = random(randomSavageReplies);
   }
 
-  // Villain Era 🖤
+  // Villain Era
   else if (
     text.includes("ex") ||
     text.includes("breakup") ||
@@ -196,37 +199,96 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     text.includes("hiwalay") ||
     text.includes("iniwan") ||
     text.includes("iwan") ||
-    text.includes("sakit") ||
-    text.includes("masakit") ||
-    text.includes("malungkot") ||
-    text.includes("iyak") ||
-    text.includes("bumalik")
+    text.includes("bumalik") ||
+    text.includes("balikan") ||
+    text.includes("cheat") ||
+    text.includes("niloko") ||
+    text.includes("heartbroken") ||
+    text.includes("broken")
   ) {
     reply = random(villainEraReplies);
   }
 
-  // Name 👤
+  // Name
   else if (
-    text.includes("name") ||
     text.includes("pangalan") ||
+    text.includes("name") ||
     text.includes("sino ka") ||
     text.includes("who are you") ||
     text.includes("ano pangalan mo")
   ) {
-    reply = random(nameReplies);
+    reply = "Ako si Sim. Huwag mo akong guluhin kung wala kang dalang chismis. 😎";
   }
 
-  // Age 🎂
+  // Age
   else if (
     text.includes("ilang taon") ||
-    text.includes("edad") ||
     text.includes("age") ||
+    text.includes("edad") ||
     text.includes("birthday")
   ) {
-    reply = random(ageReplies);
+    reply = "Secret ang edad ko. Baka tawagin mo pa akong tito. 😭";
   }
 
-   // Final Random
+    // Creator
+  else if (
+    text.includes("creator") ||
+    text.includes("owner") ||
+    text.includes("developer") ||
+    text.includes("gumawa") ||
+    text.includes("sino gumawa sayo")
+  ) {
+    reply = "Ginawa ako ni Kahj. Pero mas pogi pa rin ako sa creator ko. 😭";
+  }
+
+  // Thank You
+  else if (
+    text.includes("thank") ||
+    text.includes("thanks") ||
+    text.includes("thank you") ||
+    text.includes("salamat") ||
+    text.includes("ty") ||
+    text.includes("tnx")
+  ) {
+    reply = "Welcome. Wag kang masyadong mabait, nakakapanibago. 😎";
+  }
+
+  // Bye
+  else if (
+    text.includes("bye") ||
+    text.includes("goodbye") ||
+    text.includes("aalis") ||
+    text.includes("alis muna") ||
+    text.includes("see you") ||
+    text.includes("ingat")
+  ) {
+    reply = "Sige umalis ka na. Babalik ka rin naman mamaya. 😭";
+  }
+
+  // Good Morning
+  else if (
+    text.includes("good morning") ||
+    text.includes("magandang umaga")
+  ) {
+    reply = "Good morning! Sana hindi ka na gumawa ng katangahan ngayong araw. ☀️";
+  }
+
+  // Good Night
+  else if (
+    text.includes("good night") ||
+    text.includes("matutulog") ||
+    text.includes("tulog na")
+  ) {
+    reply = "Good night. Matulog ka na, baka bukas may common sense ka na. 🌙😭";
+  }
+
+  // Final Random
   else {
     reply = random(randomReplies);
   }
+
+  await ctx.chat.replyMessage({
+    style: MessageStyle.TEXT,
+    message: reply,
+  });
+};
