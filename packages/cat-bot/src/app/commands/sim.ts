@@ -20,6 +20,7 @@ import {
   thanksReplies,
   byeReplies,
   randomReplies,
+  kahjReplies,
 } from "./sim.replies.js";
 
 export const config: CommandConfig = {
@@ -245,13 +246,30 @@ export const onCommand = async (ctx: AppCtx): Promise<void> => {
     reply = random(byeReplies);
   }
 
-  // Random
-  else {
-    reply = random(randomReplies);
-  }
+ // About Kahj
+else if (
+  text.includes("kahj") ||
+  text.includes("creator") ||
+  text.includes("owner") ||
+  text.includes("developer") ||
+  text.includes("dev") ||
+  text.includes("programmer") ||
+  text.includes("who made you") ||
+  text.includes("who created you") ||
+  text.includes("gumawa sayo") ||
+  text.includes("sino gumawa sayo") ||
+  text.includes("about kahj")
+) {
+  reply = random(kahjReplies);
+}
 
-  await ctx.chat.replyMessage({
-    style: MessageStyle.TEXT,
-    message: reply,
-  });
+// Random
+else {
+  reply = random(randomReplies);
+}
+
+await ctx.chat.replyMessage({
+  style: MessageStyle.TEXT,
+  message: reply,
+});
 };
